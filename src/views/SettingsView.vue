@@ -208,10 +208,10 @@ function errText(e: unknown): string {
       <p class="desc">{{ t("settings.api.desc") }}</p>
       <n-form label-placement="top" size="small">
         <n-form-item :label="t('settings.api.apiId')">
-          <n-input v-model:value="apiId" placeholder="2040" />
+          <n-input v-model:value="apiId" placeholder="e.g. 12345678" />
         </n-form-item>
         <n-form-item :label="t('settings.api.apiHash')">
-          <n-input v-model:value="apiHash" placeholder="b18441a1ff607e10a989891a5462e627" show-password-on="click" />
+          <n-input v-model:value="apiHash" placeholder="0123456789abcdef0123456789abcdef" show-password-on="click" />
         </n-form-item>
       </n-form>
       <n-button type="primary" size="small" :loading="savingApi" @click="saveApi">

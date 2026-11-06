@@ -59,10 +59,23 @@ fn default_lang() -> String {
 
 impl Config {
     pub fn load(path: &Path) -> Config {
-        std::fs::read(path)
+        let mut cfg = std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .and_then(|bytes| serde_json::from_slice::<Config>(&bytes).ok())
+            .unwrap_or_default();
+        cfg.normalize();
+        cfg
+    }
+
+    /// Derive-`Default` gives 0/empty for some fields; clamp to sane values.
+    pub fn normalize(&mut self) {
+        if self.concurrency == 0 {
+            self.concurrency = 1;
+        }
+        if self.lang.is_empty() {
+            self.lang = "zh-CN".into();
+        }
+        self.concurrency = self.concurrency.clamp(1, 4);
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {

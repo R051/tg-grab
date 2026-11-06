@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -48,6 +48,14 @@ function toggleLang() {
   void invoke("save_settings", { lang: next }).catch(() => undefined);
 }
 
+watch(
+  () => store.configured,
+  (ok) => {
+    if (!ok) tab.value = "settings";
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   void store.init();
 });
@@ -90,17 +98,16 @@ onMounted(() => {
 
         <div v-if="!store.configured" class="setup-hint">
           <p>{{ t("app.notConfigured") }}</p>
-          <n-button type="primary" @click="tab = 'settings'">{{ t("app.goSettings") }}</n-button>
         </div>
 
-        <n-tabs v-else v-model:value="tab" type="segment" animated size="large" class="tabs">
-          <n-tab-pane name="download" :tab="t('app.tabs.download')">
+        <n-tabs v-model:value="tab" type="segment" animated size="large" class="tabs">
+          <n-tab-pane name="download" :tab="t('app.tabs.download')" :disabled="!store.configured">
             <DownloadView />
           </n-tab-pane>
-          <n-tab-pane name="watch" :tab="t('app.tabs.watch')">
+          <n-tab-pane name="watch" :tab="t('app.tabs.watch')" :disabled="!store.configured">
             <WatchView />
           </n-tab-pane>
-          <n-tab-pane name="history" :tab="t('app.tabs.history')">
+          <n-tab-pane name="history" :tab="t('app.tabs.history')" :disabled="!store.configured">
             <HistoryView />
           </n-tab-pane>
           <n-tab-pane name="settings" :tab="t('app.tabs.settings')">
