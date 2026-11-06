@@ -2,26 +2,16 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  NConfigProvider,
-  NMessageProvider,
-  NTabs,
-  NTabPane,
-  NTag,
-  NButton,
-  darkTheme,
-  zhCN,
-  dateZhCN,
-  enUS,
-  dateEnUS,
-  type GlobalThemeOverrides,
-} from "naive-ui";
+import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN, enUS, dateEnUS } from "naive-ui";
 import { useAppStore } from "./stores/app";
 import { setLocale } from "./i18n";
+import AppIcon from "./components/AppIcon.vue";
 import DownloadView from "./views/DownloadView.vue";
 import WatchView from "./views/WatchView.vue";
 import HistoryView from "./views/HistoryView.vue";
 import SettingsView from "./views/SettingsView.vue";
+
+import type { GlobalThemeOverrides } from "naive-ui";
 
 const { t, locale } = useI18n();
 const store = useAppStore();
@@ -32,15 +22,26 @@ const themeOverrides: GlobalThemeOverrides = {
     primaryColor: "#2ea043",
     primaryColorHover: "#3fb950",
     primaryColorPressed: "#238636",
-    bodyColor: "#0d1117",
-    cardColor: "#161b22",
-    modalColor: "#161b22",
-    popoverColor: "#161b22",
+    primaryColorSuppl: "#3fb950",
+    cardColor: "#12181f",
+    inputColor: "#0d1117",
+    actionColor: "#12181f",
+    borderColor: "#21262d",
+    borderRadius: "8px",
   },
 };
 
-const naiveLocale = computed(() => (locale.value === "zh-CN" ? zhCN : enUS));
-const naiveDateLocale = computed(() => (locale.value === "zh-CN" ? dateZhCN : dateEnUS));
+const navs = computed(() => [
+  { key: "download", label: t("app.tabs.download"), icon: "download", badge: store.pending.length || null, disabled: !store.configured },
+  { key: "watch", label: t("app.tabs.watch"), icon: "watch", badge: store.watched.length || null, disabled: !store.configured },
+  { key: "history", label: t("app.tabs.history"), icon: "history", badge: null, disabled: !store.configured },
+  { key: "settings", label: t("app.tabs.settings"), icon: "settings", badge: null, disabled: false },
+]);
+
+function go(key: string, disabled?: boolean) {
+  if (disabled) return;
+  tab.value = key;
+}
 
 function toggleLang() {
   const next = locale.value === "zh-CN" ? "en" : "zh-CN";
@@ -65,92 +66,82 @@ onMounted(() => {
   <n-config-provider
     :theme="darkTheme"
     :theme-overrides="themeOverrides"
-    :locale="naiveLocale"
-    :date-locale="naiveDateLocale"
+    :locale="locale === 'zh-CN' ? zhCN : enUS"
+    :date-locale="locale === 'zh-CN' ? dateZhCN : dateEnUS"
     style="height: 100vh"
   >
     <n-message-provider>
-      <div class="app">
-        <header class="header">
+      <div class="shell">
+        <!-- Sidebar -->
+        <aside class="sidebar">
           <div class="brand">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="logo">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
             <div>
               <h1>tg-grab</h1>
-              <p class="tagline">{{ t("app.tagline") }}</p>
+              <p class="sub">{{ t("app.tagline") }}</p>
             </div>
           </div>
-          <div class="header-right">
-            <n-button quaternary size="small" @click="toggleLang">
-              {{ locale === "zh-CN" ? "EN" : "中文" }}
-            </n-button>
-            <n-tag v-if="store.authorized" round size="small" type="success">
-              {{ store.user ?? "?" }}
-            </n-tag>
-            <n-tag v-else-if="store.configured" round size="small" type="warning">
-              {{ t("settings.login.title") }}
-            </n-tag>
+
+          <nav class="nav">
+            <button
+              v-for="n in navs"
+              :key="n.key"
+              class="nav-item"
+              :class="{ active: tab === n.key, disabled: n.disabled }"
+              @click="go(n.key, n.disabled)"
+            >
+              <AppIcon :name="n.icon" />
+              <span class="label">{{ n.label }}</span>
+              <span v-if="n.badge" class="nav-badge">{{ n.badge }}</span>
+            </button>
+          </nav>
+
+          <div class="sidebar-footer">
+            <div v-if="store.authorized" class="user-chip">
+              <div class="avatar">{{ (store.user ?? "?")[0] }}</div>
+              <div style="min-width: 0">
+                <div class="name">{{ store.user }}</div>
+                <div class="status">{{ t("app.signedIn") }}</div>
+              </div>
+            </div>
+            <div v-else class="user-chip">
+              <div class="avatar" style="background: #30363d">?</div>
+              <div class="name" style="color: var(--text-dim)">{{ t("app.notSignedIn") }}</div>
+            </div>
+            <button class="ghost-btn" style="text-align: center" @click="toggleLang">
+              {{ locale === "zh-CN" ? "English" : "中文" }}
+            </button>
           </div>
-        </header>
+        </aside>
 
-        <div v-if="!store.configured" class="setup-hint">
-          <p>{{ t("app.notConfigured") }}</p>
-        </div>
-
-        <n-tabs v-model:value="tab" type="segment" animated size="large" class="tabs">
-          <n-tab-pane name="download" :tab="t('app.tabs.download')" :disabled="!store.configured">
+        <!-- Content -->
+        <main class="content">
+          <div v-show="tab === 'download'" class="page">
             <DownloadView />
-          </n-tab-pane>
-          <n-tab-pane name="watch" :tab="t('app.tabs.watch')" :disabled="!store.configured">
+          </div>
+          <div v-show="tab === 'watch'" class="page">
             <WatchView />
-          </n-tab-pane>
-          <n-tab-pane name="history" :tab="t('app.tabs.history')" :disabled="!store.configured">
+          </div>
+          <div v-show="tab === 'history'" class="page">
             <HistoryView />
-          </n-tab-pane>
-          <n-tab-pane name="settings" :tab="t('app.tabs.settings')">
+          </div>
+          <div v-show="tab === 'settings'" class="page">
             <SettingsView />
-          </n-tab-pane>
-        </n-tabs>
+          </div>
+        </main>
       </div>
     </n-message-provider>
   </n-config-provider>
 </template>
 
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #app { height: 100%; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #0d1117;
-  color: #c9d1d9;
-}
-.app {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 20px 16px 40px;
-}
-.header {
+.shell {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.brand { display: flex; align-items: center; gap: 10px; }
-.logo { width: 28px; height: 28px; color: #2ea043; }
-.brand h1 { font-size: 20px; color: #f0f6fc; font-weight: 700; }
-.tagline { font-size: 12px; color: #8b949e; }
-.header-right { display: flex; align-items: center; gap: 8px; }
-.tabs { margin-top: 4px; }
-.setup-hint {
-  margin-top: 60px;
-  text-align: center;
-  color: #8b949e;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  align-items: center;
+  height: 100vh;
+  overflow: hidden;
 }
 </style>

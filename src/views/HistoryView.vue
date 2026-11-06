@@ -2,15 +2,9 @@
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  NCard,
-  NButton,
-  NInput,
-  NEmpty,
-  NText,
-  useMessage,
-} from "naive-ui";
+import { NButton, NInput, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
+import AppIcon from "../components/AppIcon.vue";
 import type { HistoryPage, VideoInfo } from "../types";
 
 const { t, locale } = useI18n();
@@ -132,101 +126,97 @@ async function downloadSelected() {
 </script>
 
 <template>
-  <div class="history">
-    <n-card :title="t('history.title')" size="small" class="card">
-      <div class="row">
-        <n-input
-          v-model:value="link"
-          :placeholder="t('history.input')"
-          size="small"
-          @keyup.enter="browse(false)"
-        />
-        <n-button type="primary" size="small" :loading="browsing" @click="browse(false)">
-          {{ t("history.browse") }}
-        </n-button>
-      </div>
-    </n-card>
+  <div class="panel">
+    <div class="panel-title">
+      <AppIcon name="history" :size="14" />
+      {{ t("history.title") }}
+    </div>
+    <div class="row">
+      <n-input
+        v-model:value="link"
+        :placeholder="t('history.input')"
+        size="small"
+        @keyup.enter="browse(false)"
+      />
+      <n-button type="primary" size="small" :loading="browsing" @click="browse(false)">
+        {{ t("history.browse") }}
+      </n-button>
+    </div>
+  </div>
 
-    <n-card v-if="videos.length" size="small" class="card">
-      <template #header>
-        <span>{{ chatTitle }}</span>
-        <n-text depth="3" class="count"> · {{ videos.length }}</n-text>
-      </template>
-      <div class="list">
-        <div
-          v-for="v in videos"
-          :key="v.msgId"
-          class="item"
-          :class="{ downloaded: v.downloaded }"
-          @click="!v.downloaded && toggleSelect(v)"
-        >
-          <input
-            type="checkbox"
-            class="check"
-            :checked="isSelected(v)"
-            :disabled="v.downloaded"
-            @click.stop
-            @change="toggleSelect(v)"
-          />
-          <div class="body">
-            <div class="name" :title="v.name">{{ v.name }}</div>
-            <div class="meta">
-              {{ fmtSize(v.size) }}
-              <template v-if="v.duration"> · {{ fmtDuration(v.duration) }}</template>
-              <template v-if="fmtDate(v.date)"> · {{ fmtDate(v.date) }}</template>
-              <template v-if="v.downloaded"> · ✅ {{ t("history.downloaded") }}</template>
-            </div>
+  <div v-if="videos.length" class="panel">
+    <div class="panel-title">
+      <span v-if="chatTitle" class="chat-name">{{ chatTitle }}</span>
+      <span class="count">{{ videos.length }}</span>
+    </div>
+    <div class="rows">
+      <div
+        v-for="v in videos"
+        :key="v.msgId"
+        class="row-item"
+        :class="{ downloaded: v.downloaded }"
+        @click="!v.downloaded && toggleSelect(v)"
+      >
+        <input
+          type="checkbox"
+          class="check"
+          :checked="isSelected(v)"
+          :disabled="v.downloaded"
+          @click.stop
+          @change="toggleSelect(v)"
+        />
+        <span class="row-icon">🎬</span>
+        <div class="row-body">
+          <div class="row-title" :title="v.name">{{ v.name }}</div>
+          <div class="row-meta">
+            <span>{{ fmtSize(v.size) }}</span>
+            <template v-if="v.duration"> · <span>{{ fmtDuration(v.duration) }}</span></template>
+            <template v-if="fmtDate(v.date)"> · <span>{{ fmtDate(v.date) }}</span></template>
+            <span v-if="v.downloaded" class="pill success">✅ {{ t("history.downloaded") }}</span>
           </div>
         </div>
       </div>
-      <div class="row actions">
-        <n-button
-          type="primary"
-          size="small"
-          :disabled="!selected.size"
-          :loading="downloading"
-          @click="downloadSelected"
-        >
-          {{ t("history.downloadSelected", { n: selected.size }) }}
-        </n-button>
-        <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="browse(true)">
-          {{ t("history.loadMore") }}
-        </n-button>
-        <label class="selall">
-          <input
-            type="checkbox"
-            :checked="pageAllSelected()"
-            :disabled="selectableCount() === 0"
-            @change="toggleSelectAll"
-          />
-          {{ t("history.selectAll") }}
-        </label>
-      </div>
-    </n-card>
+    </div>
+    <div class="row actions">
+      <n-button
+        type="primary"
+        size="small"
+        :disabled="!selected.size"
+        :loading="downloading"
+        @click="downloadSelected"
+      >
+        {{ t("history.downloadSelected", { n: selected.size }) }}
+      </n-button>
+      <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="browse(true)">
+        {{ t("history.loadMore") }}
+      </n-button>
+      <label class="selall">
+        <input
+          type="checkbox"
+          :checked="pageAllSelected()"
+          :disabled="selectableCount() === 0"
+          @change="toggleSelectAll"
+        />
+        {{ t("history.selectAll") }}
+      </label>
+    </div>
+  </div>
 
-    <n-card v-else-if="chatTitle" size="small" class="card">
-      <n-empty :description="t('history.empty')" />
-    </n-card>
+  <div v-else-if="chatTitle" class="panel">
+    <div class="empty">
+      <span class="empty-icon">🎞</span>
+      {{ t("history.empty") }}
+    </div>
   </div>
 </template>
 
 <style scoped>
-.history { display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; align-items: center; gap: 10px; }
 .actions { margin-top: 12px; }
-.selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b949e; cursor: pointer; }
-.count { font-size: 12px; font-weight: 400; }
-.list { max-height: 400px; overflow-y: auto; }
-.item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 6px; border-bottom: 1px solid #21262d; font-size: 13px;
-  cursor: pointer; border-radius: 4px;
-}
-.item:hover { background: #1c2128; }
-.item.downloaded { opacity: 0.55; cursor: default; }
-.item:last-child { border-bottom: 0; }
-.check { flex-shrink: 0; cursor: pointer; }
-.body { flex: 1; min-width: 0; }
-.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e6edf3; }
-.meta { color: #8b949e; font-size: 11px; margin-top: 2px; }
+.chat-name { color: var(--text); }
+.selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.rows { max-height: 420px; overflow-y: auto; }
+.row-item { cursor: pointer; }
+.row-item.downloaded { opacity: 0.55; cursor: default; }
+.check { flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
 </style>

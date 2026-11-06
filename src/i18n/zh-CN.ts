@@ -4,6 +4,8 @@ export default {
     tabs: { download: "下载", watch: "监听", history: "频道历史", settings: "设置" },
     notConfigured: "尚未配置 API 凭证，请先到「设置」完成配置",
     goSettings: "去设置",
+    signedIn: "已登录",
+    notSignedIn: "未登录",
   },
   settings: {
     api: {
@@ -54,6 +56,8 @@ export default {
     active: "正在下载",
     queueTitle: "任务列表",
     emptyQueue: "暂无任务",
+    open: "打开",
+    noFiles: "还没有下载过文件",
     filesTitle: "已下载",
     status: { queued: "排队中", downloading: "下载中", success: "成功", cached: "已存在", failed: "失败" },
     errors: {

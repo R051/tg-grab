@@ -3,15 +3,13 @@ import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  NCard,
   NButton,
   NInput,
   NCheckbox,
-  NEmpty,
-  NTag,
   useMessage,
 } from "naive-ui";
 import { useAppStore } from "../stores/app";
+import AppIcon from "../components/AppIcon.vue";
 import type { WatchEntry } from "../types";
 
 const { t } = useI18n();
@@ -89,69 +87,68 @@ async function catchupNow() {
 </script>
 
 <template>
-  <div class="watch">
-    <n-card :title="t('watch.title')" size="small" class="card">
-      <p class="desc">{{ t("watch.desc") }}</p>
+  <div class="panel">
+    <div class="panel-title">
+      <AppIcon name="watch" :size="14" />
+      {{ t("watch.title") }}
+    </div>
+    <p class="desc">{{ t("watch.desc") }}</p>
+    <div class="row">
       <n-input
         v-model:value="link"
         :placeholder="t('watch.input')"
         size="small"
         @keyup.enter="addWatch"
       />
-      <div class="row">
-        <n-button type="primary" size="small" :loading="adding" @click="addWatch">
-          {{ t("watch.add") }}
-        </n-button>
-        <n-checkbox v-model:checked="backfill" size="small">
-          {{ t("watch.backfill") }}
-        </n-checkbox>
-        <n-button quaternary size="small" :loading="busy" style="margin-left: auto" @click="catchupNow">
-          {{ t("watch.catchup") }}
-        </n-button>
-      </div>
-    </n-card>
+      <n-button type="primary" size="small" :loading="adding" @click="addWatch">
+        {{ t("watch.add") }}
+      </n-button>
+    </div>
+    <div class="row" style="margin-top: 10px">
+      <n-checkbox v-model:checked="backfill" size="small">
+        {{ t("watch.backfill") }}
+      </n-checkbox>
+      <n-button quaternary size="small" :loading="busy" style="margin-left: auto" @click="catchupNow">
+        {{ t("watch.catchup") }}
+      </n-button>
+    </div>
+  </div>
 
-    <n-card size="small" class="card">
-      <n-empty v-if="!store.watched.length" :description="t('watch.empty')" />
-      <div v-else class="list">
-        <div v-for="w in store.watched" :key="w.raw_id" class="item">
-          <span class="icon">{{ w.enabled ? "👁" : "⏸" }}</span>
-          <div class="body">
-            <div class="title">{{ w.title }}</div>
-            <div class="meta">
-              <n-tag size="tiny" :type="w.enabled ? 'success' : 'default'">
-                {{ w.enabled ? t("watch.watching") : t("watch.paused") }}
-              </n-tag>
-              <span class="track">{{ t("watch.track", { n: w.last_msg_id }) }}</span>
-            </div>
-          </div>
-          <div class="actions">
-            <n-button quaternary size="tiny" @click="toggle(w)">
-              {{ w.enabled ? t("watch.pause") : t("watch.resume") }}
-            </n-button>
-            <n-button quaternary size="tiny" type="error" @click="remove(w)">
-              {{ t("watch.delete") }}
-            </n-button>
+  <div class="panel">
+    <div class="panel-title">
+      {{ t("watch.title") }}
+      <span class="count">{{ store.watched.length }}</span>
+    </div>
+    <div v-if="!store.watched.length" class="empty">
+      <span class="empty-icon">📡</span>
+      {{ t("watch.empty") }}
+    </div>
+    <div v-else class="rows">
+      <div v-for="w in store.watched" :key="w.raw_id" class="row-item">
+        <span class="row-icon">{{ w.enabled ? "👁" : "⏸" }}</span>
+        <div class="row-body">
+          <div class="row-title">{{ w.title }}</div>
+          <div class="row-meta">
+            <span class="pill" :class="w.enabled ? 'success' : 'queued'">
+              {{ w.enabled ? t("watch.watching") : t("watch.paused") }}
+            </span>
+            <span>{{ t("watch.track", { n: w.last_msg_id }) }}</span>
           </div>
         </div>
+        <div class="actions">
+          <button class="ghost-btn" @click="toggle(w)">
+            {{ w.enabled ? t("watch.pause") : t("watch.resume") }}
+          </button>
+          <button class="ghost-btn danger" @click="remove(w)">{{ t("watch.delete") }}</button>
+        </div>
       </div>
-    </n-card>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.watch { display: flex; flex-direction: column; gap: 12px; }
-.desc { font-size: 12px; color: #8b949e; margin-bottom: 10px; }
-.row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-.list { max-height: 420px; overflow-y: auto; }
-.item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 4px; border-bottom: 1px solid #21262d; font-size: 13px;
-}
-.item:last-child { border-bottom: 0; }
-.body { flex: 1; min-width: 0; }
-.title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.track { color: #8b949e; font-size: 11px; }
-.actions { display: flex; gap: 2px; flex-shrink: 0; }
+.desc { font-size: 12px; color: var(--text-dim); margin: -4px 0 10px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ghost-btn.danger:hover { border-color: var(--red); color: var(--red); }
 </style>

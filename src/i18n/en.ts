@@ -54,6 +54,8 @@ export default {
     active: "Downloading",
     queueTitle: "Tasks",
     emptyQueue: "No tasks yet",
+    open: "Open",
+    noFiles: "Nothing downloaded yet",
     filesTitle: "Downloaded",
     status: { queued: "Queued", downloading: "Downloading", success: "Done", cached: "Cached", failed: "Failed" },
     errors: {

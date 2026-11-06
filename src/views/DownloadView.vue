@@ -1,18 +1,11 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  NCard,
-  NButton,
-  NInput,
-  NProgress,
-  NTag,
-  NEmpty,
-  useMessage,
-} from "naive-ui";
+import { NButton, NInput, NProgress, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import type { TaskResult } from "../types";
+import AppIcon from "../components/AppIcon.vue";
 
 const { t } = useI18n();
 const store = useAppStore();
@@ -20,6 +13,13 @@ const message = useMessage();
 
 const input = ref("");
 const submitting = ref(false);
+
+const stats = computed(() => [
+  { num: store.pending.length, label: t("download.status.queued") },
+  { num: store.active ? 1 : 0, label: t("download.status.downloading") },
+  { num: store.results.filter((r) => r.status === "success").length, label: t("download.status.success") },
+  { num: store.files.length, label: t("download.filesTitle") },
+]);
 
 function fmtSize(bytes: number | undefined | null): string {
   const b = bytes ?? 0;
@@ -49,13 +49,13 @@ function errText(e: unknown): string {
   return raw;
 }
 
-function statusMeta(r: TaskResult): { icon: string; label: string; type: "success" | "error" | "warning" | "default" } {
+function statusMeta(r: TaskResult): { pill: string; label: string; icon: string } {
   if (r.status === "success") {
     return r.cached
-      ? { icon: "📦", label: t("download.status.cached"), type: "warning" }
-      : { icon: "✅", label: t("download.status.success"), type: "success" };
+      ? { pill: "cached", label: t("download.status.cached"), icon: "📦" }
+      : { pill: "success", label: t("download.status.success"), icon: "✅" };
   }
-  return { icon: "❌", label: errText(r.error ?? "FAILED"), type: "error" };
+  return { pill: "failed", label: errText(r.error ?? "FAILED"), icon: "❌" };
 }
 
 function shortUrl(url: string): string {
@@ -92,96 +92,123 @@ async function startDownload() {
 </script>
 
 <template>
-  <div class="download">
-    <!-- Active progress -->
-    <n-card v-if="store.active" size="small" class="card">
-      <div class="active-name">{{ store.active.name || shortUrl(store.active.url) }}</div>
-      <n-progress
-        type="line"
-        :percentage="Number(store.active.percent.toFixed(1))"
-        :height="8"
-        border-radius="4"
-        indicator-placement="inside"
-        processing
-      />
-      <div class="active-meta">
-        <span>{{ fmtSize(store.active.current) }} / {{ fmtSize(store.active.total) }}</span>
-        <span>{{ t("download.active") }}</span>
-      </div>
-    </n-card>
+  <!-- Hero input -->
+  <div class="panel">
+    <div class="panel-title">
+      <AppIcon name="download" :size="14" />
+      {{ t("download.title") }}
+    </div>
+    <n-input
+      v-model:value="input"
+      type="textarea"
+      :rows="4"
+      :placeholder="t('download.placeholder')"
+      class="hero-input"
+    />
+    <div class="hero-actions">
+      <n-button type="primary" size="large" :loading="submitting" @click="startDownload">
+        <template #icon>
+          <AppIcon name="download" :size="16" />
+        </template>
+        {{ t("download.start") }}
+      </n-button>
+      <button v-if="input" class="ghost-btn" @click="input = ''">{{ t("download.clear") }}</button>
+    </div>
+  </div>
 
-    <!-- Input -->
-    <n-card :title="t('download.title')" size="small" class="card">
-      <n-input
-        v-model:value="input"
-        type="textarea"
-        :rows="4"
-        :placeholder="t('download.placeholder')"
-      />
-      <div class="row">
-        <n-button type="primary" :loading="submitting" @click="startDownload">
-          {{ t("download.start") }}
-        </n-button>
-        <n-button quaternary @click="input = ''">{{ t("download.clear") }}</n-button>
-      </div>
-    </n-card>
+  <!-- Stats -->
+  <div class="stats">
+    <div v-for="s in stats" :key="s.label" class="stat">
+      <div class="num">{{ s.num }}</div>
+      <div class="label">{{ s.label }}</div>
+    </div>
+  </div>
 
-    <!-- Task list -->
-    <n-card :title="`${t('download.queueTitle')} (${store.pending.length + store.results.length})`" size="small" class="card">
-      <n-empty v-if="!store.pending.length && !store.results.length" :description="t('download.emptyQueue')" />
-      <div v-else class="list">
-        <div v-for="j in store.pending" :key="j.id" class="item">
-          <span class="icon">⏳</span>
-          <span class="body" :title="j.url">{{ shortUrl(j.url) }}</span>
-          <n-tag size="tiny">{{ t("download.status.queued") }}</n-tag>
-        </div>
-        <div v-for="r in [...store.results].reverse()" :key="r.id" class="item">
-          <span class="icon">{{ statusMeta(r).icon }}</span>
-          <span class="body" :title="r.url">
-            {{ r.name || shortUrl(r.url) }}
-            <span class="meta">{{ statusMeta(r).label }}{{ r.size ? ` · ${fmtSize(r.size)}` : "" }}</span>
-          </span>
-          <a
-            v-if="r.status === 'success' && r.name"
-            class="dl"
-            href="#"
-            @click.prevent="openFile(r.name!)"
-          >
-            ⤓
-          </a>
+  <!-- Active download -->
+  <div v-if="store.active" class="panel active-card">
+    <div class="row-item" style="border: 0; padding: 0">
+      <span class="row-icon">🔄</span>
+      <div class="row-body">
+        <div class="row-title">{{ store.active.name || shortUrl(store.active.url) }}</div>
+        <n-progress
+          type="line"
+          :percentage="Number(store.active.percent.toFixed(1))"
+          :height="7"
+          border-radius="4"
+          :show-indicator="false"
+          style="margin-top: 6px"
+        />
+        <div class="row-meta">
+          <span>{{ fmtSize(store.active.current) }} / {{ fmtSize(store.active.total) }}</span>
+          <span class="pill downloading">{{ t("download.status.downloading") }} {{ store.active.percent.toFixed(1) }}%</span>
         </div>
       </div>
-    </n-card>
+    </div>
+  </div>
 
-    <!-- Files -->
-    <n-card :title="`${t('download.filesTitle')} (${store.files.length})`" size="small" class="card">
-      <n-empty v-if="!store.files.length" description="—" />
-      <div v-else class="list">
-        <div v-for="f in store.files" :key="f.name" class="item">
-          <span class="icon">💾</span>
-          <span class="body">{{ f.name }}<span class="meta">{{ fmtSize(f.size) }}</span></span>
-          <a class="dl" href="#" @click.prevent="openFile(f.name)">⤓</a>
+  <!-- Tasks -->
+  <div class="panel">
+    <div class="panel-title">
+      {{ t("download.queueTitle") }}
+      <span class="count">{{ store.pending.length + store.results.length }}</span>
+    </div>
+    <div v-if="!store.pending.length && !store.results.length" class="empty">
+      <span class="empty-icon">🗂</span>
+      {{ t("download.emptyQueue") }}
+    </div>
+    <div v-else class="rows">
+      <div v-for="j in store.pending" :key="`p${j.id}`" class="row-item">
+        <span class="row-icon">⏳</span>
+        <div class="row-body">
+          <div class="row-title">{{ shortUrl(j.url) }}</div>
+          <div class="row-meta"><span class="pill queued">{{ t("download.status.queued") }}</span></div>
         </div>
       </div>
-    </n-card>
+      <div v-for="r in [...store.results].reverse()" :key="`r${r.id}`" class="row-item">
+        <span class="row-icon">{{ statusMeta(r).icon }}</span>
+        <div class="row-body">
+          <div class="row-title">{{ r.name || shortUrl(r.url) }}</div>
+          <div class="row-meta">
+            <span class="pill" :class="statusMeta(r).pill">{{ statusMeta(r).label }}</span>
+            <span v-if="r.size">· {{ fmtSize(r.size) }}</span>
+          </div>
+        </div>
+        <button
+          v-if="r.status === 'success' && r.name"
+          class="ghost-btn row-action"
+          @click="openFile(r.name!)"
+        >
+          ⤓ {{ t("download.open") }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Files -->
+  <div class="panel">
+    <div class="panel-title">
+      {{ t("download.filesTitle") }}
+      <span class="count">{{ store.files.length }}</span>
+    </div>
+    <div v-if="!store.files.length" class="empty">
+      <span class="empty-icon">📁</span>
+      {{ t("download.noFiles") }}
+    </div>
+    <div v-else class="rows">
+      <div v-for="f in store.files" :key="f.name" class="row-item">
+        <span class="row-icon">🎬</span>
+        <div class="row-body">
+          <div class="row-title" :title="f.name">{{ f.name }}</div>
+          <div class="row-meta">{{ fmtSize(f.size) }}</div>
+        </div>
+        <button class="ghost-btn row-action" @click="openFile(f.name)">⤓ {{ t("download.open") }}</button>
+      </div>
+    </div>
   </div>
 </template>
 
-
 <style scoped>
-.download { display: flex; flex-direction: column; gap: 12px; }
-.card { border-radius: 8px; }
-.row { display: flex; gap: 8px; margin-top: 10px; }
-.active-name { font-size: 13px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.active-meta { display: flex; justify-content: space-between; font-size: 12px; color: #8b949e; margin-top: 4px; }
-.list { max-height: 320px; overflow-y: auto; }
-.item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 4px; border-bottom: 1px solid #21262d; font-size: 13px;
-}
-.item:last-child { border-bottom: 0; }
-.icon { flex-shrink: 0; }
-.body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.meta { color: #8b949e; font-size: 11px; margin-left: 6px; }
-.dl { color: #58a6ff; text-decoration: none; flex-shrink: 0; }
+.hero-input :deep(textarea) { font-size: 13.5px; }
+.hero-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.active-card { border-color: rgba(88, 166, 255, 0.35); background: linear-gradient(180deg, rgba(88, 166, 255, 0.05), var(--surface)); }
 </style>
