@@ -119,19 +119,33 @@ async function browse() {
 function dayKeyOf(v: VideoInfo): string | null {
   if (!v.date) return null;
   try {
-    return new Date(v.date).toLocaleDateString(locale.value, {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
+    const d = new Date(v.date);
+    if (isNaN(d.getTime())) return null;
+    const p = (n: number) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
   } catch {
     return null;
   }
 }
 
+function dayLabel(day: string): string {
+  // display in the active locale style
+  try {
+    return new Date(day + "T00:00:00").toLocaleDateString(locale.value, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  } catch {
+    return day;
+  }
+}
+
 function shiftDay(day: string, delta: number): string {
-  const parts = day.split("-").map(Number);
-  const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!m) return day;
+  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(dt.getTime())) return day;
   dt.setDate(dt.getDate() + delta);
   const p = (n: number) => String(n).padStart(2, "0");
   return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate());
@@ -291,7 +305,7 @@ async function downloadSelected() {
     </div>
     <div class="grid">
       <template v-for="g in grouped" :key="g.key">
-        <div class="day-divider">{{ g.label }}</div>
+        <div class="day-divider">{{ dayLabel(g.key) }}</div>
         <div
           v-for="v in g.videos"
           :key="v.msgId"
