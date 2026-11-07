@@ -4,8 +4,6 @@
 
 A native desktop app to download videos from Telegram channels and groups — built with **Rust + Tauri v2 + Vue 3**.
 
-![screenshot](docs/ui-download.png)
-
 ## Features
 
 - **📥 Manual downloads** — paste one or many `t.me` message links, with a live progress bar

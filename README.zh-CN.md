@@ -4,8 +4,6 @@
 
 Telegram 频道/群组视频下载器 —— 原生桌面应用，基于 **Rust + Tauri v2 + Vue 3**。
 
-![截图](docs/ui-download.png)
-
 ## 功能
 
 - **📥 手动下载** —— 粘贴一个或多个 `t.me` 消息链接，实时进度条
