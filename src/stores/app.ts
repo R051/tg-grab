@@ -16,7 +16,7 @@ let initialized = false;
 export const useAppStore = defineStore("app", {
   state: () => ({
     status: null as Status | null,
-    lastSample: null as { id: number; ts: number; current: number } | null,
+    samples: [] as { ts: number; current: number }[],
     speed: 0,
     settings: null as AppSettings | null,
     pending: [] as { id: number; url: string }[],
@@ -63,22 +63,25 @@ export const useAppStore = defineStore("app", {
       on("queue:progress", (p) => {
         const a = p as ActiveTask;
         const now = Date.now();
-        if (this.lastSample && this.lastSample.id === a.id) {
-          const dt = (now - this.lastSample.ts) / 1000;
-          if (dt > 0.2) {
-            this.speed = Math.max(0, (a.current - this.lastSample.current) / dt);
-            this.lastSample = { id: a.id, ts: now, current: a.current };
-          }
-        } else {
-          this.speed = 0;
-          this.lastSample = { id: a.id, ts: now, current: a.current };
+        // Sliding 3-second window: stable speed, no flicker to zero.
+        const keep = this.samples.filter((s) => now - s.ts < 3000);
+        keep.push({ ts: now, current: a.current });
+        this.samples = keep;
+        const first = keep[0];
+        const span = (now - first.ts) / 1000;
+        if (span >= 0.8) {
+          this.speed = Math.max(0, (a.current - first.current) / span);
         }
         this.active = a;
       });
       on("queue:result", (p) => {
         const r = p as TaskResult;
         this.results.push(r);
-        if (this.active?.id === r.id) this.active = null;
+        if (this.active?.id === r.id) {
+          this.active = null;
+          this.samples = [];
+          this.speed = 0;
+        }
         void this.refreshFiles();
       });
       on("queue:pending", () => {

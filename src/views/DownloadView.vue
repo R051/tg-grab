@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { invoke, fileUrl, isDesktop } from "../lib/backend";
+import { invoke } from "../lib/backend";
 import { NButton, NInput, NProgress, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
-
 import AppIcon from "../components/AppIcon.vue";
 
 const { t } = useI18n();
@@ -14,23 +13,6 @@ const message = useMessage();
 const input = ref("");
 const submitting = ref(false);
 const filter = ref<"all" | "active" | "done" | "failed">("all");
-const speed = ref(0);
-let lastSample: { id: number; ts: number; current: number } | null = null;
-
-const stats = computed(() => [
-  { num: store.pending.length + (store.active ? 1 : 0), label: t("download.status.downloading") },
-  { num: store.results.filter((r) => r.status === "success").length, label: t("download.status.success") },
-  { num: store.results.filter((r) => r.status === "failed").length, label: t("download.status.failed") },
-  { num: store.files.length, label: t("download.filesTitle") },
-]);
-
-function fmtSize(bytes: number | undefined | null): string {
-  const b = bytes ?? 0;
-  if (b < 1024) return `${b} B`;
-  if (b < 1048576) return `${(b / 1024).toFixed(0)} KB`;
-  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
-  return `${(b / 1073741824).toFixed(2)} GB`;
-}
 
 const FILTERS = [
   { key: "all", label: "全部" },
@@ -48,6 +30,7 @@ const ERR_KEYS = [
   "RATE_LIMITED",
   "CHANNEL_UNAVAILABLE",
   "API_NOT_CONFIGURED",
+  "CANCELLED",
 ] as const;
 
 function errText(e: unknown): string {
@@ -67,32 +50,21 @@ interface Row {
   size?: number;
   cached?: boolean;
   error?: string;
-  percent?: number;
-  current?: number;
-  total?: number;
 }
 
-/** One row per task — status transitions in place (Gopeed-style). */
+/** One row per task — status transitions in place. */
 const taskRowsRaw = computed<Row[]>(() => {
   const rows: Row[] = [];
   const seen = new Set<number>();
 
-  if (store.active) {
-    seen.add(store.active.id);
-    rows.push({
-      kind: "active",
-      id: store.active.id,
-      url: store.active.url,
-      name: store.active.name,
-      percent: store.active.percent,
-      current: store.active.current,
-      total: store.active.total,
-    });
-  }
   for (const p of store.pending) {
     if (seen.has(p.id)) continue;
     seen.add(p.id);
     rows.push({ kind: "queued", id: p.id, url: p.url });
+  }
+  if (store.active) {
+    seen.add(store.active.id);
+    rows.push({ kind: "active", id: store.active.id, url: store.active.url });
   }
   for (const r of [...store.results].reverse()) {
     if (seen.has(r.id)) continue;
@@ -109,11 +81,6 @@ const taskRowsRaw = computed<Row[]>(() => {
   return rows;
 });
 
-watch(taskRowsRaw, (rows) => {
-  const a = rows.find((r) => r.kind === "active");
-  if (a) trackSpeed(a);
-});
-
 const taskRows = computed<Row[]>(() => {
   const f = filter.value;
   if (f === "all") return taskRowsRaw.value;
@@ -124,44 +91,35 @@ const taskRows = computed<Row[]>(() => {
   });
 });
 
-/** Live speed (bytes/sec) computed from consecutive progress samples. */
-function trackSpeed(row: Row) {
-  if (row.kind !== "active") return;
-  const now = Date.now();
-  if (lastSample && lastSample.id === row.id) {
-    const dt = (now - lastSample.ts) / 1000;
-    if (dt > 0.2) {
-      speed.value = Math.max(0, ((row.current ?? 0) - lastSample.current) / dt);
-      lastSample = { id: row.id, ts: now, current: row.current ?? 0 };
-    }
-  } else {
-    lastSample = { id: row.id, ts: now, current: row.current ?? 0 };
-  }
+const stats = computed(() => [
+  { num: store.active ? 1 : 0, label: t("download.status.downloading") },
+  { num: store.pending.length, label: t("download.status.queued") },
+  { num: store.results.filter((r) => r.status === "success").length, label: t("download.status.success") },
+  { num: store.files.length, label: t("download.filesTitle") },
+]);
+
+const totalSpeed = computed(() => store.speed);
+
+function fmtSize(bytes: number | undefined | null): string {
+  const b = bytes ?? 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(0)} KB`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
+  return `${(b / 1073741824).toFixed(2)} GB`;
 }
 
-function fmtEta(row: Row): string {
-  const sp = speed.value;
-  if (sp <= 0 || !row.total) return "";
+function fmtEta(row: { total?: number; current?: number }): string {
+  const sp = totalSpeed.value;
+  if (sp <= 0 || !row.total) return "—";
   const remain = row.total - (row.current ?? 0);
-  if (remain <= 0) return "";
+  if (remain <= 0) return "—";
   const sec = Math.round(remain / sp);
-  const m = Math.floor(sec / 60);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
   const s2 = sec % 60;
-  return m > 0 ? `${m}分${String(s2).padStart(2, "0")}秒` : `${s2}秒`;
-}
-
-function cancelTask(row: Row) {
-  void invoke("queue_cancel", { id: row.id }).then(() => store.refreshQueue()).catch((e) => message.error(String(e)));
-}
-
-function rowTitle(row: Row): string {
-  if (row.name) return row.name;
-  const m = row.url.match(/t\.me\/(?:c\/)?[^/]+\/\d+/);
-  return m ? m[0] : row.url;
-}
-
-function rowIndexQueue(id: number): number {
-  return store.pending.findIndex((p) => p.id === id);
+  if (h > 0) return `${h}小时${m}分`;
+  if (m > 0) return `${m}分${String(s2).padStart(2, "0")}秒`;
+  return `${s2}秒`;
 }
 
 function statusMeta(row: Row): { pill: string; label: string; icon: string } {
@@ -177,6 +135,16 @@ function statusMeta(row: Row): { pill: string; label: string; icon: string } {
     default:
       return { pill: "failed", label: errText(row.error ?? "FAILED"), icon: "❌" };
   }
+}
+
+function rowTitle(row: Row): string {
+  if (row.name) return row.name;
+  const m = row.url.match(/t\.me\/(?:c\/)?[^/]+\/\d+/);
+  return m ? m[0] : row.url;
+}
+
+function rowIndexQueue(id: number): number {
+  return store.pending.findIndex((p) => p.id === id);
 }
 
 async function openFile(name: string) {
@@ -202,15 +170,6 @@ async function removeFile(name: string) {
   }
 }
 
-async function moveTask(row: Row, toFront: boolean) {
-  try {
-    await invoke("queue_move", { id: row.id, toFront });
-    await store.refreshQueue();
-  } catch (e) {
-    message.error(String(e));
-  }
-}
-
 async function retryTask(row: Row) {
   try {
     await invoke<number[]>("download_urls", { urls: [row.url] });
@@ -218,6 +177,24 @@ async function retryTask(row: Row) {
     await store.refreshQueue();
   } catch (e) {
     message.error(errText(e));
+  }
+}
+
+async function cancelTask(row: Row) {
+  try {
+    await invoke("queue_cancel", { id: row.id });
+    await store.refreshQueue();
+  } catch (e) {
+    message.error(errText(e));
+  }
+}
+
+async function moveTask(row: Row, toFront: boolean) {
+  try {
+    await invoke("queue_move", { id: row.id, toFront });
+    await store.refreshQueue();
+  } catch (e) {
+    message.error(String(e));
   }
 }
 
@@ -239,6 +216,8 @@ async function startDownload() {
     submitting.value = false;
   }
 }
+
+import { fileUrl, isDesktop } from "../lib/backend";
 </script>
 
 <template>
@@ -274,6 +253,46 @@ async function startDownload() {
     </div>
   </div>
 
+  <!-- Monitor: active download -->
+  <div v-if="store.active" class="panel monitor">
+    <div class="monitor-head">
+      <span class="row-icon">🔄</span>
+      <div class="m-name" :title="store.active.name || store.active.url">
+        {{ store.active.name || store.active.url }}
+      </div>
+      <span class="pill downloading">{{ (store.active.percent ?? 0).toFixed(1) }}%</span>
+      <button class="ghost-btn danger" @click="cancelTask({ id: store.active.id, url: store.active.url, kind: 'active' })">
+        ✕ {{ t("download.cancel") }}
+      </button>
+    </div>
+    <n-progress
+      type="line"
+      :percentage="Number((store.active.percent ?? 0).toFixed(1))"
+      :height="10"
+      border-radius="5"
+      :show-indicator="false"
+      style="margin: 10px 0 8px"
+    />
+    <div class="monitor-grid">
+      <div class="m-stat">
+        <div class="m-val">{{ fmtSize(totalSpeed) }}/s</div>
+        <div class="m-label">{{ t("download.speed") }}</div>
+      </div>
+      <div class="m-stat">
+        <div class="m-val">{{ fmtSize(store.active.current) }}</div>
+        <div class="m-label">{{ t("download.doneBytes") }}</div>
+      </div>
+      <div class="m-stat">
+        <div class="m-val">{{ fmtSize(store.active.total) }}</div>
+        <div class="m-label">{{ t("download.totalBytes") }}</div>
+      </div>
+      <div class="m-stat">
+        <div class="m-val">{{ fmtEta(store.active) }}</div>
+        <div class="m-label">{{ t("download.eta") }}</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Unified task list -->
   <div class="panel">
     <div class="panel-title">
@@ -302,30 +321,10 @@ async function startDownload() {
           <div class="row-title" :title="row.url">{{ rowTitle(row) }}</div>
           <div class="row-meta">
             <span class="pill" :class="statusMeta(row).pill">{{ statusMeta(row).label }}</span>
-            <span v-if="row.kind === 'active' && row.current !== undefined">
-              {{ fmtSize(row.current) }} / {{ fmtSize(row.total) }}
-              · {{ fmtSize(speed) }}/s
-              <template v-if="fmtEta(row)">· 剩余 {{ fmtEta(row) }}</template>
-            </span>
-            <span v-else-if="row.size">· {{ fmtSize(row.size) }}</span>
+            <span v-if="row.size">· {{ fmtSize(row.size) }}</span>
+            <span v-if="row.kind === 'failed' && row.error">· {{ errText(row.error) }}</span>
           </div>
-          <n-progress
-            v-if="row.kind === 'active'"
-            type="line"
-            :percentage="Number((row.percent ?? 0).toFixed(1))"
-            :height="5"
-            border-radius="3"
-            :show-indicator="false"
-            style="margin-top: 5px"
-          />
         </div>
-        <button
-          v-if="row.kind === 'active'"
-          class="ghost-btn row-action danger"
-          @click="cancelTask(row)"
-        >
-          ✕
-        </button>
         <template v-if="row.kind === 'queued'">
           <button
             v-if="rowIndexQueue(row.id) > 0"
@@ -343,13 +342,7 @@ async function startDownload() {
           >
             ↑
           </button>
-          <button
-            class="ghost-btn row-action danger"
-            :title="t('download.cancel')"
-            @click="cancelTask(row)"
-          >
-            ✕
-          </button>
+          <button class="ghost-btn row-action danger" @click="cancelTask(row)">✕</button>
         </template>
         <button
           v-if="(row.kind === 'success' || row.kind === 'cached') && row.name"
@@ -400,6 +393,28 @@ async function startDownload() {
 .hero-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .ghost-btn.danger:hover { border-color: var(--red); color: var(--red); }
 .row-item.k-active { background: rgba(96, 165, 250, 0.05); }
+
+/* monitor card */
+.monitor { border-color: rgba(16, 185, 129, 0.3); }
+.monitor-head { display: flex; align-items: center; gap: 10px; }
+.m-name {
+  flex: 1; min-width: 0;
+  color: var(--text); font-size: 13px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.monitor-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin-top: 4px;
+}
+.m-stat {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.m-val { font-size: 14px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.m-label { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+
 .filters { margin-left: auto; display: flex; gap: 4px; }
 .chip-filter {
   background: none; border: 0; color: var(--text-faint);
