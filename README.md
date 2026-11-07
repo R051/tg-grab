@@ -51,6 +51,12 @@ tg-grab speaks MTProto with your own Telegram account, so it needs **your** API 
 
 > Don't use leaked/shared api_ids floating around the internet — Telegram actively blocks them, and your account may be affected.
 
+## Restricted channels 🔓
+
+tg-grab works with channels that have **Restrict Saving Content** enabled — the restriction is enforced by the official client UI, not by the MTProto protocol. Browse the channel's history and download as usual.
+
+> Please respect content creators. Personal use is fine — mass redistribution is not what this tool is for.
+
 ## Notes & limits
 
 - First run requires a one-time login (phone + code + optional 2FA password). The session is stored locally (`app data dir/tggrab.session`).
