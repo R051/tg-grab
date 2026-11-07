@@ -4,8 +4,8 @@ import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { NButton, NDatePicker, NInput, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
-import AppIcon from "../components/AppIcon.vue";
 import type { HistoryPage, VideoInfo, WatchEntry } from "../types";
+import AppIcon from "../components/AppIcon.vue";
 
 const { t, locale } = useI18n();
 const store = useAppStore();
@@ -23,7 +23,6 @@ const recents = ref<WatchEntry[]>([]);
 const dateFilter = ref<number | null>(null); // ms timestamp of picked day
 const thumbs = ref<Record<number, string>>({});
 const thumbsLoading = ref(false);
-void refreshRecents();
 
 interface DayGroup {
   key: string;
@@ -58,9 +57,83 @@ const grouped = computed<DayGroup[]>(() => {
   return groups;
 });
 
+function fmtSize(bytes: number): string {
+  if (!bytes) return "0 B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(0) + " KB";
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
+  return (bytes / 1073741824).toFixed(2) + " GB";
+}
+
+function fmtDuration(sec: number): string {
+  if (!sec) return "";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return h > 0
+    ? h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+    : m + ":" + String(s).padStart(2, "0");
+}
+
+function pickedDay(): string | null {
+  if (!dateFilter.value) return null;
+  const d = new Date(dateFilter.value);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
+async function refreshRecents() {
+  recents.value = await invoke<WatchEntry[]>("history_recent").catch(() => []);
+}
+
+function browseRecent(entry: WatchEntry) {
+  link.value = entry.username ? "https://t.me/" + entry.username : "https://t.me/c/" + entry.raw_id;
+  dateFilter.value = null;
+  void browse(false);
+}
+
+async function removeRecent(entry: WatchEntry) {
+  await invoke("history_recent_remove", { rawId: entry.raw_id }).catch(() => undefined);
+  await refreshRecents();
+}
+
+async function browse(more: boolean) {
+  if (!link.value.trim()) return;
+  browsing.value = true;
+  try {
+    // Date filter only applies to the initial jump; "load more" continues
+    // older-than-that pagination from where the day scan stopped.
+    const page = await invoke<HistoryPage>("history_page", {
+      link: link.value.trim(),
+      offsetId: more ? nextOffset.value : 0,
+      date: more ? null : pickedDay(),
+    });
+    chatTitle.value = page.chat.title;
+    videos.value = more ? [...videos.value, ...page.videos] : page.videos;
+    nextOffset.value = page.nextOffset;
+    exhausted.value = page.exhausted;
+    if (!more) {
+      selected.value = new Set();
+      thumbs.value = {};
+      void refreshRecents();
+    }
+    void loadThumbs();
+    if (page.videos.length || more) {
+      message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
+    } else {
+      message.warning(t("history.empty"));
+    }
+  } catch (e) {
+    message.error(String(e));
+  } finally {
+    browsing.value = false;
+  }
+}
+
 async function loadThumbs() {
   if (thumbsLoading.value) return;
-  const need = videos.value.filter((v) => v.hasThumb && !thumbs.value[v.msgId]).map((v) => v.msgId);
+  const need = videos.value
+    .filter((v) => v.hasThumb && !thumbs.value[v.msgId])
+    .map((v) => v.msgId);
   if (!need.length || !link.value.trim()) return;
   thumbsLoading.value = true;
   try {
@@ -70,7 +143,7 @@ async function loadThumbs() {
     });
     const next = { ...thumbs.value };
     for (const item of list) {
-      next[item.msgId] = `data:image/jpeg;base64,${item.data}`;
+      next[item.msgId] = "data:image/jpeg;base64," + item.data;
     }
     thumbs.value = next;
   } catch {
@@ -78,23 +151,6 @@ async function loadThumbs() {
   } finally {
     thumbsLoading.value = false;
   }
-}
-
-function fmtSize(bytes: number): string {
-  if (!bytes) return "0 B";
-  if (bytes < 1048576) return `${(bytes / 1024).toFixed(0)} KB`;
-  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
-  return `${(bytes / 1073741824).toFixed(2)} GB`;
-}
-
-function fmtDuration(sec: number): string {
-  if (!sec) return "";
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  return h > 0
-    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-    : `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function isSelected(v: VideoInfo): boolean {
@@ -113,8 +169,8 @@ function selectableCount(): number {
 }
 
 function pageAllSelected(): boolean {
-  const n = selectableCount();
-  return n > 0 && videos.value.filter((v) => !v.downloaded).every((v) => isSelected(v));
+  const all = videos.value.filter((v) => !v.downloaded);
+  return all.length > 0 && all.every((v) => isSelected(v));
 }
 
 function toggleSelectAll(ev: Event) {
@@ -126,57 +182,6 @@ function toggleSelectAll(ev: Event) {
     else next.delete(v.url);
   }
   selected.value = next;
-}
-
-function pickedDay(): string | null {
-  if (!dateFilter.value) return null;
-  const d = new Date(dateFilter.value);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-async function refreshRecents() {
-  recents.value = await invoke<WatchEntry[]>("history_recent").catch(() => []);
-}
-
-function browseRecent(entry: WatchEntry) {
-  const linkStr = entry.username ? `https://t.me/${entry.username}` : `https://t.me/c/${entry.raw_id}`;
-  link.value = linkStr;
-  dateFilter.value = null;
-  void browse(false);
-}
-
-async function removeRecent(entry: WatchEntry) {
-  await invoke("history_recent_remove", { rawId: entry.raw_id }).catch(() => undefined);
-  await refreshRecents();
-}
-
-async function browse(more: boolean) {
-  if (!link.value.trim()) return;
-  browsing.value = true;
-  try {
-    const page = await invoke<HistoryPage>("history_page", {
-      link: link.value.trim(),
-      offsetId: more ? nextOffset.value : 0,
-      date: pickedDay(),
-    });
-    if (!more) await refreshRecents();
-    chatTitle.value = page.chat.title;
-    videos.value = more ? [...videos.value, ...page.videos] : page.videos;
-    nextOffset.value = page.nextOffset;
-    exhausted.value = page.exhausted;
-    selected.value = new Set();
-    void loadThumbs();
-    if (page.videos.length || more) {
-      message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
-    } else {
-      message.warning(t("history.empty"));
-    }
-  } catch (e) {
-    message.error(String(e));
-  } finally {
-    browsing.value = false;
-  }
 }
 
 async function downloadSelected() {
@@ -224,7 +229,7 @@ async function downloadSelected() {
     <div v-if="recents.length" class="recents">
       <span class="recents-label">{{ t("history.recent") }}</span>
       <span v-for="r in recents" :key="r.raw_id" class="recent-chip">
-        <button class="chip-btn" @click="browseRecent(r)">{{ r.title }}</button>
+        <button class="chip-btn" :title="r.title" @click="browseRecent(r)">{{ r.title }}</button>
         <button class="chip-x" @click.stop="removeRecent(r)">✕</button>
       </span>
     </div>
@@ -232,43 +237,44 @@ async function downloadSelected() {
 
   <div v-if="videos.length" class="panel">
     <div class="panel-title">
-      <span v-if="chatTitle" class="chat-name">{{ chatTitle }}</span>
+      <span>{{ chatTitle }}</span>
       <span class="count">{{ videos.length }}</span>
+      <n-text v-if="dateFilter" depth="3" style="font-size: 11.5px; margin-left: auto">
+        {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
+      </n-text>
     </div>
-    <div class="rows">
+    <div class="grid">
       <template v-for="g in grouped" :key="g.key">
         <div class="day-divider">{{ g.label }}</div>
         <div
           v-for="v in g.videos"
           :key="v.msgId"
-          class="row-item"
-          :class="{ downloaded: v.downloaded }"
+          class="vcard"
+          :class="{ downloaded: v.downloaded, selected: isSelected(v) }"
           @click="!v.downloaded && toggleSelect(v)"
         >
-          <input
-            type="checkbox"
-            class="check"
-            :checked="isSelected(v)"
-            :disabled="v.downloaded"
-            @click.stop
-            @change="toggleSelect(v)"
-          />
-          <img
-            v-if="thumbs[v.msgId]"
-            class="thumb"
-            :src="thumbs[v.msgId]"
-            alt=""
-            loading="lazy"
-          />
-          <span v-else class="thumb thumb-empty">{{ v.hasThumb ? "…" : "🎬" }}</span>
-          <div class="body">
-            <div class="name" :title="v.name">{{ v.name }}</div>
-            <div class="meta">
-              <span>{{ fmtSize(v.size) }}</span>
-              <template v-if="v.duration"> · <span>{{ fmtDuration(v.duration) }}</span></template>
-              <span v-if="v.downloaded" class="pill success">✅ {{ t("history.downloaded") }}</span>
-            </div>
+          <div class="thumb-wrap">
+            <img
+              v-if="thumbs[v.msgId]"
+              class="thumb"
+              :src="thumbs[v.msgId]"
+              alt=""
+              loading="lazy"
+            />
+            <span v-else class="thumb thumb-empty">{{ v.hasThumb ? "…" : "🎬" }}</span>
+            <input
+              type="checkbox"
+              class="check"
+              :checked="isSelected(v)"
+              :disabled="v.downloaded"
+              @click.stop
+              @change="toggleSelect(v)"
+            />
+            <span v-if="v.duration" class="duration">{{ fmtDuration(v.duration) }}</span>
+            <span v-if="v.downloaded" class="done-badge">✅ {{ t("history.downloaded") }}</span>
           </div>
+          <div class="vname" :title="v.name">{{ v.name }}</div>
+          <div class="vmeta">{{ fmtSize(v.size) }}</div>
         </div>
       </template>
     </div>
@@ -282,12 +288,9 @@ async function downloadSelected() {
       >
         {{ t("history.downloadSelected", { n: selected.size }) }}
       </n-button>
-      <n-button v-if="!exhausted && !dateFilter" quaternary size="small" :loading="browsing" @click="browse(true)">
+      <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="browse(true)">
         {{ t("history.loadMore") }}
       </n-button>
-      <n-text v-if="dateFilter" depth="3" style="font-size: 12px">
-        {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
-      </n-text>
       <label class="selall">
         <input
           type="checkbox"
@@ -310,6 +313,70 @@ async function downloadSelected() {
 
 <style scoped>
 .row { display: flex; align-items: center; gap: 10px; }
+.actions { margin-top: 14px; }
+.selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.count { font-size: 12px; font-weight: 400; }
+
+/* video card grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  max-height: 560px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.day-divider {
+  grid-column: 1 / -1;
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface);
+  padding: 6px 2px 4px;
+  font-size: 11.5px; font-weight: 600; color: var(--accent-bright);
+  border-bottom: 1px solid var(--border-soft);
+}
+.vcard {
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.12s;
+  display: flex; flex-direction: column;
+}
+.vcard:hover { border-color: #3d444d; transform: translateY(-1px); }
+.vcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.vcard.downloaded { opacity: 0.55; cursor: default; }
+.thumb-wrap { position: relative; aspect-ratio: 16 / 9; background: var(--surface-2); }
+.thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-empty {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: var(--text-faint);
+}
+.check {
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent);
+}
+.duration {
+  position: absolute; right: 6px; bottom: 6px;
+  background: rgba(0, 0, 0, 0.75); color: #fff;
+  font-size: 10.5px; font-weight: 600;
+  padding: 1px 6px; border-radius: 4px;
+}
+.done-badge {
+  position: absolute; left: 6px; bottom: 6px;
+  background: rgba(0, 0, 0, 0.75); color: var(--accent-bright);
+  font-size: 10.5px; font-weight: 600;
+  padding: 1px 6px; border-radius: 4px;
+}
+.vname {
+  font-size: 12px; color: var(--text);
+  padding: 7px 8px 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.35; min-height: 2.7em;
+  word-break: break-all;
+}
+.vmeta { font-size: 11px; color: var(--text-dim); padding: 3px 8px 9px; }
+
 .recents { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .recents-label { font-size: 11.5px; color: var(--text-faint); }
 .recent-chip { display: inline-flex; align-items: center; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
@@ -324,24 +391,4 @@ async function downloadSelected() {
   padding: 4px 8px 4px 2px; cursor: pointer;
 }
 .chip-x:hover { color: var(--red); }
-.actions { margin-top: 12px; }
-.chat-name { color: var(--text); }
-.selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
-.rows { max-height: 460px; overflow-y: auto; }
-.day-divider {
-  position: sticky; top: 0; z-index: 1;
-  background: var(--surface);
-  padding: 6px 8px 4px;
-  font-size: 11.5px; font-weight: 600; color: var(--accent-bright);
-  border-bottom: 1px solid var(--border-soft);
-}
-.thumb {
-  width: 64px; height: 40px; object-fit: cover;
-  border-radius: 6px; flex-shrink: 0; background: var(--bg-inset);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; color: var(--text-faint);
-}
-.row-item { cursor: pointer; }
-.row-item.downloaded { opacity: 0.55; cursor: default; }
-.check { flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
 </style>
