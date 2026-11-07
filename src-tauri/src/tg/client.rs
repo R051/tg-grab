@@ -111,7 +111,7 @@ pub async fn ensure_client(st: &Inner) -> Result<Client, String> {
         ..
     } = SenderPool::with_configuration(session.clone(), api_id, build_params(&cfg));
 
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         runner.run().await;
     });
 

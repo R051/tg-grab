@@ -50,6 +50,12 @@ pub struct Config {
     /// Where downloaded files go (absolute path, set on first run).
     #[serde(default)]
     pub downloads_dir: Option<PathBuf>,
+    /// Web mode: access token (auto-generated on first `--serve` run).
+    #[serde(default)]
+    pub server_token: Option<String>,
+    /// Web mode: listen port.
+    #[serde(default)]
+    pub server_port: Option<u16>,
 }
 
 fn default_concurrency() -> usize {

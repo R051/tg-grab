@@ -92,9 +92,9 @@ async fn copy_auth_to_dc(
 
 /// Spawn download workers (1 = sequential across files; each file itself
 /// downloads with 4 parallel chunk connections). Capped at 4.
-pub fn spawn_workers(st: SharedState) {
+pub async fn spawn_workers(st: SharedState) {
     let n = {
-        let cfg = st.config.blocking_read();
+        let cfg = st.config.read().await;
         cfg.concurrency.clamp(1, 4)
     };
     for _ in 0..n {

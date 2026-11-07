@@ -1,40 +1,50 @@
 [package]
 name = "tg-grab"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Telegram channel video downloader"
+authors = ["bryan"]
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tg_grab_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "tg-grab"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "tg-grab-server"
+path = "src/bin/server_main.rs"
+required-features = ["server"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2" }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
+tauri = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+axum = { version = "0.8", optional = true, features = ["ws"] }
+tower-http = { version = "0.6", optional = true, features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "fs", "io-util", "net"] }
 regex = "1"
 base64 = "0.22"
 log = "0.4"
+chrono = "0.4"
 
 # Telegram MTProto (pinned to master API with SenderPool/SqliteSession/stream_updates)
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }
 grammers-session = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }
 grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e", features = ["proxy"] }
-chrono = "0.4"
 
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-plugin-opener"]
+server = ["dep:axum", "dep:tower-http"]
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1
 lto = true
