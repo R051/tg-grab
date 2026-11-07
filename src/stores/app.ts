@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "../lib/backend";
+import { on } from "../lib/backend";
 import type {
   ActiveTask,
   AppSettings,
@@ -58,25 +58,26 @@ export const useAppStore = defineStore("app", {
       await this.refreshQueue().catch(() => undefined);
       await this.refreshFiles().catch(() => undefined);
 
-      await listen<ActiveTask>("queue:progress", (e) => {
-        this.active = e.payload;
+      on("queue:progress", (p) => {
+        this.active = p as ActiveTask;
       });
-      await listen<TaskResult>("queue:result", (e) => {
-        this.results.push(e.payload);
-        if (this.active?.id === e.payload.id) this.active = null;
+      on("queue:result", (p) => {
+        const r = p as TaskResult;
+        this.results.push(r);
+        if (this.active?.id === r.id) this.active = null;
         void this.refreshFiles();
       });
-      await listen("queue:pending", () => {
+      on("queue:pending", () => {
         void this.refreshQueue();
       });
-      await listen("queue:changed", () => {
+      on("queue:changed", () => {
         void this.refreshQueue();
       });
-      await listen("watch:changed", () => {
+      on("watch:changed", () => {
         void this.refreshWatched();
         void this.refreshSettings();
       });
-      await listen("auth:changed", () => {
+      on("auth:changed", () => {
         void this.refreshStatus();
       });
     },

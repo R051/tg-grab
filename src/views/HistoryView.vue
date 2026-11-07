@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../lib/backend";
 import { NButton, NDatePicker, NInput, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import type { HistoryPage, VideoInfo, WatchEntry } from "../types";

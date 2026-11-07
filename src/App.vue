@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, setUnauthorizedHandler, setToken, isDesktop } from "./lib/backend";
 import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN, enUS, dateEnUS } from "naive-ui";
 import { useAppStore } from "./stores/app";
 import { setLocale } from "./i18n";
@@ -16,6 +16,21 @@ import type { GlobalThemeOverrides } from "naive-ui";
 const { t, locale } = useI18n();
 const store = useAppStore();
 const tab = ref("download");
+
+const webNeedToken = ref(false);
+const webToken = ref("");
+if (!isDesktop) {
+  setUnauthorizedHandler(() => {
+    webNeedToken.value = true;
+  });
+}
+
+function submitWebToken() {
+  if (!webToken.value.trim()) return;
+  setToken(webToken.value.trim());
+  webNeedToken.value = false;
+  location.reload();
+}
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -85,7 +100,21 @@ onMounted(() => {
     style="height: 100vh"
   >
     <n-message-provider>
-      <div class="shell">
+      <div v-if="webNeedToken" class="token-gate">
+        <div class="token-card">
+          <h2>tg-grab</h2>
+          <p>请输入访问令牌（服务端启动时打印）</p>
+          <n-input
+            v-model:value="webToken"
+            type="password"
+            show-password-on="click"
+            placeholder="access token"
+            @keyup.enter="submitWebToken"
+          />
+          <n-button type="primary" style="margin-top: 10px" @click="submitWebToken">确定</n-button>
+        </div>
+      </div>
+      <div v-else class="shell">
         <!-- Sidebar -->
         <aside class="sidebar">
           <div class="brand">
@@ -158,4 +187,19 @@ onMounted(() => {
   height: 100vh;
   overflow: hidden;
 }
+.token-gate {
+  height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+}
+.token-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  padding: 28px 26px;
+  width: 340px;
+  text-align: center;
+}
+.token-card h2 { color: var(--text); margin-bottom: 6px; }
+.token-card p { font-size: 12.5px; color: var(--text-dim); margin-bottom: 14px; }
 </style>

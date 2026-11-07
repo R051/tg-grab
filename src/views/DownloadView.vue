@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, fileUrl, isDesktop } from "../lib/backend";
 import { NButton, NInput, NProgress, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 
@@ -121,6 +121,11 @@ function statusMeta(row: Row): { pill: string; label: string; icon: string } {
 }
 
 async function openFile(name: string) {
+  if (!isDesktop) {
+    const url = fileUrl(name);
+    if (url) window.open(url, "_blank");
+    return;
+  }
   try {
     await invoke("reveal_file", { name });
   } catch {
