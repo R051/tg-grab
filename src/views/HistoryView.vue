@@ -327,8 +327,8 @@ async function downloadSelected() {
 /* video card grid */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 9px;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 7px;
   max-height: 620px;
   overflow-y: auto;
   padding: 2px;
@@ -360,14 +360,14 @@ async function downloadSelected() {
   font-size: 22px; color: var(--text-faint);
 }
 .check {
-  position: absolute; top: 6px; left: 6px; z-index: 2;
-  width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent);
+  position: absolute; top: 4px; left: 4px; z-index: 2;
+  width: 13px; height: 13px; cursor: pointer; accent-color: var(--accent);
 }
 .duration {
-  position: absolute; right: 6px; bottom: 6px;
+  position: absolute; right: 4px; bottom: 4px;
   background: rgba(0, 0, 0, 0.75); color: #fff;
-  font-size: 10.5px; font-weight: 600;
-  padding: 1px 6px; border-radius: 4px;
+  font-size: 9px; font-weight: 600;
+  padding: 0 4px; border-radius: 3px;
 }
 .done-badge {
   position: absolute; left: 6px; bottom: 6px;
@@ -376,14 +376,14 @@ async function downloadSelected() {
   padding: 1px 6px; border-radius: 4px;
 }
 .vname {
-  font-size: 11.5px; color: var(--text);
-  padding: 6px 7px 0;
+  font-size: 10.5px; color: var(--text);
+  padding: 5px 6px 0;
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
   overflow: hidden; line-height: 1.35;
   word-break: break-all; white-space: nowrap; text-overflow: ellipsis;
   -webkit-line-clamp: unset;
 }
-.vmeta { font-size: 10.5px; color: var(--text-dim); padding: 2px 7px 7px; }
+.vmeta { font-size: 9.5px; color: var(--text-dim); padding: 2px 6px 6px; }
 
 .recents { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .recents-label { font-size: 11.5px; color: var(--text-faint); }
