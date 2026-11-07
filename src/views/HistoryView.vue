@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { NButton, NInput, useMessage } from "naive-ui";
@@ -19,6 +19,63 @@ const videos = ref<VideoInfo[]>([]);
 const nextOffset = ref(0);
 const exhausted = ref(true);
 const selected = ref<Set<string>>(new Set());
+const thumbs = ref<Record<number, string>>({});
+const thumbsLoading = ref(false);
+
+interface DayGroup {
+  key: string;
+  label: string;
+  videos: VideoInfo[];
+}
+
+const grouped = computed<DayGroup[]>(() => {
+  const groups: DayGroup[] = [];
+  const index = new Map<string, DayGroup>();
+  for (const v of videos.value) {
+    let day = "";
+    if (v.date) {
+      try {
+        day = new Date(v.date).toLocaleDateString(locale.value, {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        });
+      } catch {
+        day = "";
+      }
+    }
+    const key = day || "—";
+    if (!index.has(key)) {
+      const g: DayGroup = { key, label: key, videos: [] };
+      index.set(key, g);
+      groups.push(g);
+    }
+    index.get(key)!.videos.push(v);
+  }
+  return groups;
+});
+
+async function loadThumbs() {
+  if (thumbsLoading.value) return;
+  const need = videos.value.filter((v) => v.hasThumb && !thumbs.value[v.msgId]).map((v) => v.msgId);
+  if (!need.length || !link.value.trim()) return;
+  thumbsLoading.value = true;
+  try {
+    const list = await invoke<{ msgId: number; data: string }[]>("history_thumbs", {
+      link: link.value.trim(),
+      msgIds: need,
+    });
+    const next = { ...thumbs.value };
+    for (const item of list) {
+      next[item.msgId] = `data:image/jpeg;base64,${item.data}`;
+    }
+    thumbs.value = next;
+  } catch {
+    /* thumbs are decorative — ignore failures */
+  } finally {
+    thumbsLoading.value = false;
+  }
+}
 
 function fmtSize(bytes: number): string {
   if (!bytes) return "0 B";
@@ -35,21 +92,6 @@ function fmtDuration(sec: number): string {
   return h > 0
     ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
     : `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString(locale.value, {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
 }
 
 function isSelected(v: VideoInfo): boolean {
@@ -96,6 +138,7 @@ async function browse(more: boolean) {
     nextOffset.value = page.nextOffset;
     exhausted.value = page.exhausted;
     selected.value = new Set();
+    void loadThumbs();
     if (page.videos.length || more) {
       message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
     } else {
@@ -150,32 +193,41 @@ async function downloadSelected() {
       <span class="count">{{ videos.length }}</span>
     </div>
     <div class="rows">
-      <div
-        v-for="v in videos"
-        :key="v.msgId"
-        class="row-item"
-        :class="{ downloaded: v.downloaded }"
-        @click="!v.downloaded && toggleSelect(v)"
-      >
-        <input
-          type="checkbox"
-          class="check"
-          :checked="isSelected(v)"
-          :disabled="v.downloaded"
-          @click.stop
-          @change="toggleSelect(v)"
-        />
-        <span class="row-icon">🎬</span>
-        <div class="row-body">
-          <div class="row-title" :title="v.name">{{ v.name }}</div>
-          <div class="row-meta">
-            <span>{{ fmtSize(v.size) }}</span>
-            <template v-if="v.duration"> · <span>{{ fmtDuration(v.duration) }}</span></template>
-            <template v-if="fmtDate(v.date)"> · <span>{{ fmtDate(v.date) }}</span></template>
-            <span v-if="v.downloaded" class="pill success">✅ {{ t("history.downloaded") }}</span>
+      <template v-for="g in grouped" :key="g.key">
+        <div class="day-divider">{{ g.label }}</div>
+        <div
+          v-for="v in g.videos"
+          :key="v.msgId"
+          class="row-item"
+          :class="{ downloaded: v.downloaded }"
+          @click="!v.downloaded && toggleSelect(v)"
+        >
+          <input
+            type="checkbox"
+            class="check"
+            :checked="isSelected(v)"
+            :disabled="v.downloaded"
+            @click.stop
+            @change="toggleSelect(v)"
+          />
+          <img
+            v-if="thumbs[v.msgId]"
+            class="thumb"
+            :src="thumbs[v.msgId]"
+            alt=""
+            loading="lazy"
+          />
+          <span v-else class="thumb thumb-empty">{{ v.hasThumb ? "…" : "🎬" }}</span>
+          <div class="body">
+            <div class="name" :title="v.name">{{ v.name }}</div>
+            <div class="meta">
+              <span>{{ fmtSize(v.size) }}</span>
+              <template v-if="v.duration"> · <span>{{ fmtDuration(v.duration) }}</span></template>
+              <span v-if="v.downloaded" class="pill success">✅ {{ t("history.downloaded") }}</span>
+            </div>
           </div>
         </div>
-      </div>
+      </template>
     </div>
     <div class="row actions">
       <n-button
@@ -215,7 +267,20 @@ async function downloadSelected() {
 .actions { margin-top: 12px; }
 .chat-name { color: var(--text); }
 .selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
-.rows { max-height: 420px; overflow-y: auto; }
+.rows { max-height: 460px; overflow-y: auto; }
+.day-divider {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface);
+  padding: 6px 8px 4px;
+  font-size: 11.5px; font-weight: 600; color: var(--accent-bright);
+  border-bottom: 1px solid var(--border-soft);
+}
+.thumb {
+  width: 64px; height: 40px; object-fit: cover;
+  border-radius: 6px; flex-shrink: 0; background: var(--bg-inset);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--text-faint);
+}
 .row-item { cursor: pointer; }
 .row-item.downloaded { opacity: 0.55; cursor: default; }
 .check { flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }

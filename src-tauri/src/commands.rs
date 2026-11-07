@@ -5,6 +5,14 @@ use crate::state::SharedState;
 use crate::tg::auth::{self, SignInOutcome};
 use crate::tg::client::{ensure_client, logged_in_name, resolve_chat};
 use crate::tg::history::HistoryPage;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbData {
+    pub msg_id: i32,
+    /// base64-encoded image bytes (jpeg).
+    pub data: String,
+}
 use crate::tg::links::{make_msg_link, parse_chat_link};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -233,6 +241,44 @@ pub async fn reveal_file(
     app.opener()
         .reveal_item_in_dir(&path)
         .map_err(|err| err.to_string())
+}
+
+/// Fetch (and cache) thumbnails for a set of history messages.
+#[tauri::command]
+pub async fn history_thumbs(
+    st: State<'_, SharedState>,
+    link: String,
+    msg_ids: Vec<i32>,
+) -> Result<Vec<ThumbData>, String> {
+    let client = ensure_client(&st).await?;
+    if !client.is_authorized().await.unwrap_or(false) {
+        return Err("NOT_LOGGED_IN".into());
+    }
+    let chat_link = crate::tg::links::parse_chat_link(&link)?;
+    let rc = resolve_chat(&st, &client, &chat_link).await?;
+
+    let messages = client
+        .get_messages_by_id(rc.peer, &msg_ids)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for (i, msg) in messages.into_iter().enumerate() {
+        let Some(msg) = msg else { continue };
+        let Some(media) = msg.media() else { continue };
+        let raw_id = rc.identity.raw_id;
+        let msg_id = msg_ids[i];
+        if let Some(bytes) =
+            crate::tg::history::fetch_thumb(&st, &client, &media, raw_id, msg_id).await
+        {
+            use base64::Engine as _;
+            out.push(ThumbData {
+                msg_id,
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            });
+        }
+    }
+    Ok(out)
 }
 
 // ── watched channels ──

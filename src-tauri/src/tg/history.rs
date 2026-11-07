@@ -3,6 +3,7 @@
 use crate::tg::client::resolve_chat;
 use crate::tg::links::{make_msg_link, parse_chat_link, sanitize_filename};
 use crate::tg::links::ChatLink;
+use grammers_client::media::Downloadable;
 use grammers_client::message::Message;
 use grammers_client::Client;
 use serde::Serialize;
@@ -20,6 +21,8 @@ pub struct VideoInfo {
     pub date: Option<String>,
     /// The local file exists and matches the source size.
     pub downloaded: bool,
+    /// A server thumbnail is available for this video.
+    pub has_thumb: bool,
     /// Canonical t.me link (queue display + download pipeline input).
     pub url: String,
 }
@@ -111,6 +114,9 @@ fn video_entry(
     let local = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let downloaded = meta.size > 0 && local == meta.size;
 
+    // A thumbnail counts as available if cached on disk or offered by the server.
+    let has_thumb = thumb_path(st, raw_id, msg_id).exists() || best_thumb(&media).is_some();
+
     Some(VideoInfo {
         msg_id,
         name,
@@ -118,6 +124,78 @@ fn video_entry(
         duration: meta.duration_secs.map(|d| d as u64).unwrap_or(0),
         date: Some(msg.date().to_rfc3339()),
         downloaded,
+        has_thumb,
         url: make_msg_link(username, raw_id, msg_id),
     })
+}
+
+/// Best-effort thumbnail fetch for one history entry.
+/// Returns JPEG/PNG bytes: disk cache first, else picked from the document
+/// (server-stored sizes are downloaded, inline sizes are taken as-is).
+pub async fn fetch_thumb(
+    st: &crate::state::Inner,
+    client: &Client,
+    media: &grammers_client::media::Media,
+    raw_id: i64,
+    msg_id: i32,
+) -> Option<Vec<u8>> {
+    let path = thumb_path(st, raw_id, msg_id);
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        return Some(bytes);
+    }
+    let thumb = best_thumb(media)?;
+    let bytes: Vec<u8> = match thumb {
+        ThumbSource::Inline(data) => data,
+        ThumbSource::Remote(ps) => {
+            let mut it = client.iter_download(&ps);
+            let mut buf = Vec::new();
+            while let Some(chunk) = it.next().await.ok()? {
+                buf.extend_from_slice(&chunk);
+            }
+            buf
+        }
+    };
+    if bytes.is_empty() {
+        return None;
+    }
+    // Cache for next time (best effort).
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&path, &bytes).ok();
+    Some(bytes)
+}
+
+enum ThumbSource {
+    Inline(Vec<u8>),
+    Remote(grammers_client::media::PhotoSize),
+}
+
+/// Pick the largest usable thumbnail of the document's media.
+fn best_thumb(media: &grammers_client::media::Media) -> Option<ThumbSource> {
+    use grammers_client::media::Media;
+    let doc = match media {
+        Media::Document(d) => d,
+        _ => return None,
+    };
+    let mut sizes = doc.thumbs();
+    sizes.sort_by_key(|s| std::cmp::Reverse(s.size()));
+    for s in sizes {
+        if s.size() == 0 {
+            continue;
+        }
+        if s.to_data().is_some() {
+            return Some(ThumbSource::Inline(s.to_data()?));
+        }
+        if s.to_raw_input_location().is_some() {
+            return Some(ThumbSource::Remote(s));
+        }
+    }
+    None
+}
+
+fn thumb_path(st: &crate::state::Inner, raw_id: i64, msg_id: i32) -> std::path::PathBuf {
+    st.downloads_dir
+        .join("thumbs")
+        .join(format!("{raw_id}_{msg_id}.jpg"))
 }

@@ -65,6 +65,7 @@ export interface VideoInfo {
   duration: number;
   date: string | null;
   downloaded: boolean;
+  hasThumb: boolean;
   url: string;
 }
 
