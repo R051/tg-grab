@@ -26,6 +26,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", optional = true, features = ["tray-icon"] }
 tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
 axum = { version = "0.8", optional = true, features = ["ws"] }
 tower-http = { version = "0.6", optional = true, features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,7 +44,7 @@ grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "fa7692e
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-plugin-opener"]
+desktop = ["dep:tauri", "dep:tauri-plugin-opener", "dep:tauri-plugin-single-instance"]
 server = ["dep:axum", "dep:tower-http"]
 
 [profile.release]

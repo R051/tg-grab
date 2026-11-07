@@ -89,12 +89,19 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
 pub mod desktop {
     use super::init_core;
     use tauri::menu::{Menu, MenuItem};
-    use tauri::tray::TrayIconBuilder;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::{Manager, WindowEvent};
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
     pub fn run() {
         tauri::Builder::default()
+            .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+                // Second launch: focus the existing window instead.
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }))
             .plugin(tauri_plugin_opener::init())
             .invoke_handler(tauri::generate_handler![
                 crate::commands::get_status,
@@ -138,7 +145,28 @@ pub mod desktop {
                 let tray_menu = Menu::with_items(app, &[&show, &quit])?;
                 let tray = TrayIconBuilder::new()
                     .menu(&tray_menu)
+                    .tooltip("tg-grab")
                     .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        // Left click toggles window visibility.
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(w) = app.get_webview_window("main") {
+                                let visible = w.is_visible().unwrap_or(false);
+                                if visible {
+                                    let _ = w.hide();
+                                } else {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
+                            }
+                        }
+                    })
                     .on_menu_event(|app, ev| match ev.id.as_ref() {
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
