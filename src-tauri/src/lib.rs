@@ -46,6 +46,15 @@ pub fn run() {
             let config_path = data_dir.join("config.json");
             let session_path = data_dir.join("tggrab.session");
 
+            // Leftover .part files from an interrupted run are always junk.
+            if let Ok(rd) = std::fs::read_dir(&downloads_dir) {
+                for entry in rd.flatten() {
+                    if entry.path().extension().map(|e| e == "part").unwrap_or(false) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+
             let config = config::Config::load(&config_path);
 
             let st: SharedState = Arc::new(Inner {

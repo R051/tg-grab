@@ -213,6 +213,14 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult
         target = st.downloads_dir.join(&file_name);
     }
 
+    // Download into a .part temp file; only a verified-complete file gets
+    // the real name, so an interrupted run can never leave a broken
+    // "final" file behind.
+    let part_path = st.downloads_dir.join(format!("{file_name}.part"));
+    if part_path.exists() {
+        let _ = std::fs::remove_file(&part_path);
+    }
+
     // Publish the active task before starting so the UI can show the name.
     let progress = ActiveTask {
         id: job.id,
@@ -249,19 +257,22 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult
         }
     });
 
-    let result = match download_parallel(st, &client, &media, &target, total, done).await {
-        Ok(()) => TaskResult {
-            id: job.id,
-            url: job.url.clone(),
-            status: "success".into(),
-            name: Some(file_name),
-            size: Some(total),
-            cached: Some(false),
-            error: None,
+    let result = match download_parallel(st, &client, &media, &part_path, total, done).await {
+        Ok(()) => match tokio::fs::rename(&part_path, &target).await {
+            Ok(()) => TaskResult {
+                id: job.id,
+                url: job.url.clone(),
+                status: "success".into(),
+                name: Some(file_name),
+                size: Some(total),
+                cached: Some(false),
+                error: None,
+            },
+            Err(e) => TaskResult::failed(job.id, &job.url, e.to_string()),
         },
         Err(e) => {
             // Remove the partial file so a retry starts clean.
-            let _ = std::fs::remove_file(&target);
+            let _ = std::fs::remove_file(&part_path);
             TaskResult::failed(job.id, &job.url, e)
         }
     };
