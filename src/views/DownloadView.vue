@@ -63,6 +63,16 @@ function shortUrl(url: string): string {
   return m ? m[0] : url;
 }
 
+async function removeFile(name: string) {
+  if (!window.confirm(t("download.deleteConfirm", { name }))) return;
+  try {
+    await store.deleteFile(name);
+    message.success(t("download.deleted"));
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
 async function openFile(name: string) {
   try {
     await invoke("reveal_file", { name });
@@ -202,6 +212,9 @@ async function startDownload() {
           <div class="row-meta">{{ fmtSize(f.size) }}</div>
         </div>
         <button class="ghost-btn row-action" @click="openFile(f.name)">⤓ {{ t("download.open") }}</button>
+        <button class="ghost-btn row-action danger" @click="removeFile(f.name)">
+          {{ t("download.delete") }}
+        </button>
       </div>
     </div>
   </div>

@@ -281,6 +281,23 @@ pub async fn history_thumbs(
     Ok(out)
 }
 
+/// Delete a downloaded file (name must be bare, inside downloads dir).
+#[tauri::command]
+pub async fn delete_file(st: State<'_, SharedState>, name: String) -> Result<(), String> {
+    let safe = std::path::Path::new(&name)
+        .file_name()
+        .ok_or("INVALID_NAME")?
+        .to_string_lossy()
+        .to_string();
+    let path = st.downloads_dir.join(&safe);
+    if !path.exists() {
+        return Err("NOT_FOUND".into());
+    }
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── watched channels ──
 
 #[tauri::command]

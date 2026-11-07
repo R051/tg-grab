@@ -49,6 +49,10 @@ function toggleLang() {
   void invoke("save_settings", { lang: next }).catch(() => undefined);
 }
 
+watch(tab, (v) => {
+  if (v === "download") void store.refreshFiles();
+});
+
 watch(
   () => store.configured,
   (ok) => {

@@ -44,6 +44,10 @@ export const useAppStore = defineStore("app", {
     async refreshFiles() {
       this.files = await invoke<DownloadedFile[]>("list_files");
     },
+    async deleteFile(name: string) {
+      await invoke("delete_file", { name });
+      await this.refreshFiles();
+    },
     async refreshWatched() {
       this.watched = await invoke<WatchEntry[]>("watch_list");
     },

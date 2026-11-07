@@ -24,6 +24,7 @@ pub fn run() {
             commands::download_urls,
             commands::get_queue,
             commands::list_files,
+            commands::delete_file,
             commands::reveal_file,
             commands::watch_list,
             commands::watch_add,
