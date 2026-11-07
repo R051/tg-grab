@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    tg_grab_lib::run()
+    tg_grab_lib::desktop::run()
 }

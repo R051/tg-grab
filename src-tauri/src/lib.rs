@@ -1,15 +1,11 @@
 pub mod api;
-#[cfg(feature = "desktop")]
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+pub mod config;
+pub mod events;
+pub mod state;
+pub mod tg;
 
 #[cfg(feature = "desktop")]
 mod commands;
-pub mod events;
-pub mod config;
-pub mod state;
-pub mod tg;
 
 use state::{Inner, SharedState};
 use std::sync::Arc;
@@ -24,11 +20,28 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
     let session_path = data_dir.join("tggrab.session");
     let queue_path = data_dir.join("queue.json");
 
-    // Leftover .part files from an interrupted run are always junk.
+    // Leftover .part files without a chunk journal are junk; paired
+    // ones (.part + .part.progress) are kept for resume.
     if let Ok(rd) = std::fs::read_dir(&downloads_dir) {
         for entry in rd.flatten() {
-            if entry.path().extension().map(|e| e == "part").unwrap_or(false) {
-                let _ = std::fs::remove_file(entry.path());
+            let path = entry.path();
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string());
+            match ext.as_deref() {
+                Some("part") => {
+                    let journal = path.with_extension("part.progress");
+                    if !journal.exists() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                Some("progress") => {
+                    let part_file = path.with_extension("part");
+                    if !part_file.exists() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -73,93 +86,99 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
 }
 
 #[cfg(feature = "desktop")]
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![
-            commands::get_status,
-            commands::save_api_config,
-            commands::save_proxy,
-            commands::save_settings,
-            commands::get_settings,
-            commands::auth_send_code,
-            commands::auth_sign_in,
-            commands::auth_check_password,
-            commands::logout,
-            commands::download_urls,
-            commands::get_queue,
-            commands::queue_move,
-            commands::queue_cancel,
-            commands::clear_thumbs,
-            commands::list_files,
-            commands::delete_file,
-            commands::reveal_file,
-            commands::watch_list,
-            commands::watch_add,
-            commands::watch_toggle,
-            commands::watch_delete,
-            commands::watch_catchup,
-            commands::history_page,
-            commands::history_thumbs,
-            commands::history_recent,
-            commands::history_recent_remove,
-            commands::history_thumbs,
-        ])
-        .on_window_event(|window, event| {
-            // Closing the window keeps the app resident in the tray.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
-        .setup(|app| {
-            // Tray icon: the app keeps downloading while hidden.
-            let show = MenuItem::with_id(app, "show", "显示 tg-grab", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show, &quit])?;
-            let mut tray = TrayIconBuilder::new()
-                .menu(&tray_menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, ev| match ev.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
-            if let Some(icon) = app.default_window_icon() {
-                tray.set_icon(Some(icon.clone()));
-            }
+pub mod desktop {
+    use super::init_core;
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri::{Manager, WindowEvent};
 
-            let data_dir = app.path().app_data_dir()?;
-            let st = tauri::async_runtime::block_on(async {
-                let st = init_core(data_dir).await;
-                app.manage(st.clone());
-                Ok::<_, Box<dyn std::error::Error>>(st)
-            })?;
-
-            // Forward core events to the webview as window events.
-            let fwd_app = app.handle().clone();
-            let mut rx = st.bus.subscribe();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok((event, payload)) => {
-                            let _ = tauri::Emitter::emit(&fwd_app, &event, payload);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(_) => break,
-                    }
+    #[cfg_attr(mobile, tauri::mobile_entry_point)]
+    pub fn run() {
+        tauri::Builder::default()
+            .plugin(tauri_plugin_opener::init())
+            .invoke_handler(tauri::generate_handler![
+                crate::commands::get_status,
+                crate::commands::save_api_config,
+                crate::commands::save_proxy,
+                crate::commands::save_settings,
+                crate::commands::get_settings,
+                crate::commands::auth_send_code,
+                crate::commands::auth_sign_in,
+                crate::commands::auth_check_password,
+                crate::commands::logout,
+                crate::commands::download_urls,
+                crate::commands::get_queue,
+                crate::commands::queue_move,
+                crate::commands::queue_cancel,
+                crate::commands::clear_thumbs,
+                crate::commands::list_files,
+                crate::commands::delete_file,
+                crate::commands::reveal_file,
+                crate::commands::watch_list,
+                crate::commands::watch_add,
+                crate::commands::watch_toggle,
+                crate::commands::watch_delete,
+                crate::commands::watch_catchup,
+                crate::commands::history_page,
+                crate::commands::history_thumbs,
+                crate::commands::history_recent,
+                crate::commands::history_recent_remove,
+            ])
+            .on_window_event(|window, event| {
+                // Closing the window keeps the app resident in the tray.
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
-            });
+            })
+            .setup(|app| {
+                // Tray icon: the app keeps downloading while hidden.
+                let show = MenuItem::with_id(app, "show", "显示 tg-grab", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let tray_menu = Menu::with_items(app, &[&show, &quit])?;
+                let tray = TrayIconBuilder::new()
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, ev| match ev.id.as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .build(app)?;
+                if let Some(icon) = app.default_window_icon() {
+                    tray.set_icon(Some(icon.clone()));
+                }
 
-            Ok(())
-        })
-                .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+                let data_dir = app.path().app_data_dir()?;
+                let st = tauri::async_runtime::block_on(async {
+                    let st = init_core(data_dir).await;
+                    app.manage(st.clone());
+                    Ok::<_, Box<dyn std::error::Error>>(st)
+                })?;
+
+                // Forward core events to the webview as window events.
+                let fwd_app = app.handle().clone();
+                let mut rx = st.bus.subscribe();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok((event, payload)) => {
+                                let _ = tauri::Emitter::emit(&fwd_app, &event, payload);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                });
+
+                Ok(())
+            })
+            .run(tauri::generate_context!())
+            .expect("error while running tauri application");
+    }
 }
