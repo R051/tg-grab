@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Telegram channel video downloader"
 authors = ["bryan"]
 edition = "2024"
+default-run = "tg-grab"
 
 [lib]
 name = "tg_grab_lib"
@@ -20,10 +21,10 @@ path = "src/bin/server_main.rs"
 required-features = ["server"]
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", optional = true }
+tauri = { version = "2", optional = true , features = [] }
 tauri-plugin-opener = { version = "2", optional = true }
 axum = { version = "0.8", optional = true, features = ["ws"] }
 tower-http = { version = "0.6", optional = true, features = ["fs"] }
