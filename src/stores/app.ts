@@ -69,6 +69,9 @@ export const useAppStore = defineStore("app", {
       await listen("queue:pending", () => {
         void this.refreshQueue();
       });
+      await listen("queue:changed", () => {
+        void this.refreshQueue();
+      });
       await listen("watch:changed", () => {
         void this.refreshWatched();
         void this.refreshSettings();

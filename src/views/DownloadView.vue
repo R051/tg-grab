@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { NButton, NInput, NProgress, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
-import type { TaskResult } from "../types";
+
 import AppIcon from "../components/AppIcon.vue";
 
 const { t } = useI18n();
@@ -15,9 +15,9 @@ const input = ref("");
 const submitting = ref(false);
 
 const stats = computed(() => [
-  { num: store.pending.length, label: t("download.status.queued") },
-  { num: store.active ? 1 : 0, label: t("download.status.downloading") },
+  { num: store.pending.length + (store.active ? 1 : 0), label: t("download.status.downloading") },
   { num: store.results.filter((r) => r.status === "success").length, label: t("download.status.success") },
+  { num: store.results.filter((r) => r.status === "failed").length, label: t("download.status.failed") },
   { num: store.files.length, label: t("download.filesTitle") },
 ]);
 
@@ -49,18 +49,83 @@ function errText(e: unknown): string {
   return raw;
 }
 
-function statusMeta(r: TaskResult): { pill: string; label: string; icon: string } {
-  if (r.status === "success") {
-    return r.cached
-      ? { pill: "cached", label: t("download.status.cached"), icon: "📦" }
-      : { pill: "success", label: t("download.status.success"), icon: "✅" };
-  }
-  return { pill: "failed", label: errText(r.error ?? "FAILED"), icon: "❌" };
+interface Row {
+  kind: "active" | "queued" | "success" | "cached" | "failed";
+  id: number;
+  url: string;
+  name?: string;
+  size?: number;
+  cached?: boolean;
+  error?: string;
+  percent?: number;
+  current?: number;
+  total?: number;
 }
 
-function shortUrl(url: string): string {
-  const m = url.match(/t\.me\/(?:c\/)?[^/]+\/\d+/);
-  return m ? m[0] : url;
+/** One row per task — status transitions in place (Gopeed-style). */
+const taskRows = computed<Row[]>(() => {
+  const rows: Row[] = [];
+  const seen = new Set<number>();
+
+  if (store.active) {
+    seen.add(store.active.id);
+    rows.push({
+      kind: "active",
+      id: store.active.id,
+      url: store.active.url,
+      name: store.active.name,
+      percent: store.active.percent,
+      current: store.active.current,
+      total: store.active.total,
+    });
+  }
+  for (const p of store.pending) {
+    if (seen.has(p.id)) continue;
+    seen.add(p.id);
+    rows.push({ kind: "queued", id: p.id, url: p.url });
+  }
+  for (const r of [...store.results].reverse()) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    rows.push({
+      kind: r.status === "failed" ? "failed" : r.cached ? "cached" : "success",
+      id: r.id,
+      url: r.url,
+      name: r.name,
+      size: r.size,
+      error: r.error,
+    });
+  }
+  return rows;
+});
+
+function rowTitle(row: Row): string {
+  if (row.name) return row.name;
+  const m = row.url.match(/t\.me\/(?:c\/)?[^/]+\/\d+/);
+  return m ? m[0] : row.url;
+}
+
+function statusMeta(row: Row): { pill: string; label: string; icon: string } {
+  switch (row.kind) {
+    case "active":
+      return { pill: "downloading", label: t("download.status.downloading"), icon: "🔄" };
+    case "queued":
+      return { pill: "queued", label: t("download.status.queued"), icon: "⏳" };
+    case "cached":
+      return { pill: "cached", label: t("download.status.cached"), icon: "📦" };
+    case "success":
+      return { pill: "success", label: t("download.status.success"), icon: "✅" };
+    default:
+      return { pill: "failed", label: errText(row.error ?? "FAILED"), icon: "❌" };
+  }
+}
+
+async function openFile(name: string) {
+  try {
+    await invoke("reveal_file", { name });
+  } catch {
+    /* no-op */
+  }
 }
 
 async function removeFile(name: string) {
@@ -73,11 +138,13 @@ async function removeFile(name: string) {
   }
 }
 
-async function openFile(name: string) {
+async function retryTask(row: Row) {
   try {
-    await invoke("reveal_file", { name });
-  } catch {
-    /* no-op */
+    await invoke<number[]>("download_urls", { urls: [row.url] });
+    message.success(t("download.queued", { n: 1 }));
+    await store.refreshQueue();
+  } catch (e) {
+    message.error(errText(e));
   }
 }
 
@@ -134,61 +201,51 @@ async function startDownload() {
     </div>
   </div>
 
-  <!-- Active download -->
-  <div v-if="store.active" class="panel active-card">
-    <div class="row-item" style="border: 0; padding: 0">
-      <span class="row-icon">🔄</span>
-      <div class="row-body">
-        <div class="row-title">{{ store.active.name || shortUrl(store.active.url) }}</div>
-        <n-progress
-          type="line"
-          :percentage="Number(store.active.percent.toFixed(1))"
-          :height="7"
-          border-radius="4"
-          :show-indicator="false"
-          style="margin-top: 6px"
-        />
-        <div class="row-meta">
-          <span>{{ fmtSize(store.active.current) }} / {{ fmtSize(store.active.total) }}</span>
-          <span class="pill downloading">{{ t("download.status.downloading") }} {{ store.active.percent.toFixed(1) }}%</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Tasks -->
+  <!-- Unified task list -->
   <div class="panel">
     <div class="panel-title">
       {{ t("download.queueTitle") }}
-      <span class="count">{{ store.pending.length + store.results.length }}</span>
+      <span class="count">{{ taskRows.length }}</span>
     </div>
-    <div v-if="!store.pending.length && !store.results.length" class="empty">
+    <div v-if="!taskRows.length" class="empty">
       <span class="empty-icon">🗂</span>
       {{ t("download.emptyQueue") }}
     </div>
     <div v-else class="rows">
-      <div v-for="j in store.pending" :key="`p${j.id}`" class="row-item">
-        <span class="row-icon">⏳</span>
+      <div v-for="row in taskRows" :key="row.id" class="row-item" :class="'k-' + row.kind">
+        <span class="row-icon">{{ statusMeta(row).icon }}</span>
         <div class="row-body">
-          <div class="row-title">{{ shortUrl(j.url) }}</div>
-          <div class="row-meta"><span class="pill queued">{{ t("download.status.queued") }}</span></div>
-        </div>
-      </div>
-      <div v-for="r in [...store.results].reverse()" :key="`r${r.id}`" class="row-item">
-        <span class="row-icon">{{ statusMeta(r).icon }}</span>
-        <div class="row-body">
-          <div class="row-title">{{ r.name || shortUrl(r.url) }}</div>
+          <div class="row-title" :title="row.url">{{ rowTitle(row) }}</div>
           <div class="row-meta">
-            <span class="pill" :class="statusMeta(r).pill">{{ statusMeta(r).label }}</span>
-            <span v-if="r.size">· {{ fmtSize(r.size) }}</span>
+            <span class="pill" :class="statusMeta(row).pill">{{ statusMeta(row).label }}</span>
+            <span v-if="row.kind === 'active' && row.current !== undefined">
+              {{ fmtSize(row.current) }} / {{ fmtSize(row.total) }}
+            </span>
+            <span v-else-if="row.size">· {{ fmtSize(row.size) }}</span>
           </div>
+          <n-progress
+            v-if="row.kind === 'active'"
+            type="line"
+            :percentage="Number((row.percent ?? 0).toFixed(1))"
+            :height="5"
+            border-radius="3"
+            :show-indicator="false"
+            style="margin-top: 5px"
+          />
         </div>
         <button
-          v-if="r.status === 'success' && r.name"
+          v-if="(row.kind === 'success' || row.kind === 'cached') && row.name"
           class="ghost-btn row-action"
-          @click="openFile(r.name!)"
+          @click="openFile(row.name)"
         >
-          ⤓ {{ t("download.open") }}
+          ⤓
+        </button>
+        <button
+          v-else-if="row.kind === 'failed'"
+          class="ghost-btn row-action"
+          @click="retryTask(row)"
+        >
+          ⟳
         </button>
       </div>
     </div>
@@ -223,5 +280,6 @@ async function startDownload() {
 <style scoped>
 .hero-input :deep(textarea) { font-size: 13.5px; }
 .hero-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.active-card { border-color: rgba(88, 166, 255, 0.35); background: linear-gradient(180deg, rgba(88, 166, 255, 0.05), var(--surface)); }
+.ghost-btn.danger:hover { border-color: var(--red); color: var(--red); }
+.row-item.k-active { background: rgba(88, 166, 255, 0.05); }
 </style>

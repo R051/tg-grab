@@ -159,6 +159,7 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             // download still knows about it.
             *st.queue.in_flight.lock().await = j.clone();
             st.queue.persist(&st.queue_path).await;
+            let _ = app.emit("queue:changed", true);
             j
         };
         let Some(job) = job else {
@@ -180,6 +181,7 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
         *st.queue.in_flight.lock().await = None;
         st.queue.persist(&st.queue_path).await;
         let _ = app.emit("queue:result", &result);
+        let _ = app.emit("queue:changed", true);
     }
 }
 
