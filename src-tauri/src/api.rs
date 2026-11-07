@@ -159,6 +159,11 @@ pub async fn download_urls(st: &SharedState, urls: Vec<String>) -> Result<Vec<u6
     Ok(st.queue.enqueue(urls).await)
 }
 
+/// Cancel a queued or in-flight download.
+pub async fn queue_cancel(st: &SharedState, id: u64) -> Result<(), String> {
+    crate::tg::queue::cancel_job(st, id).await
+}
+
 pub async fn get_queue(st: &SharedState) -> Result<serde_json::Value, String> {
     Ok(crate::tg::queue::snapshot(st).await)
 }
@@ -213,14 +218,29 @@ pub struct DownloadedFile {
 
 pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String> {
     let mut files = Vec::new();
-    let mut rd = tokio::fs::read_dir(&st.downloads_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    while let Ok(Some(entry)) = rd.next_entry().await {
-        let Ok(meta) = entry.metadata().await else { continue };
-        if meta.is_file() {
+    let base = st.downloads_dir.clone();
+    let mut stack = vec![base.clone()];
+    while let Some(dir) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let Ok(meta) = entry.metadata().await else { continue };
+            if meta.is_dir() {
+                if entry.file_name() != "thumbs" {
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(&base)
+                .unwrap_or(entry.path().as_path())
+                .to_string_lossy()
+                .to_string();
             files.push(DownloadedFile {
-                name: entry.file_name().to_string_lossy().to_string(),
+                name: rel,
                 size: meta.len(),
             });
         }
@@ -229,13 +249,29 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
     Ok(files)
 }
 
+/// Resolve a user-supplied relative file name inside downloads_dir,
+/// rejecting path traversal.
+fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::path::PathBuf, String> {
+    let rel_path = std::path::Path::new(rel);
+    if rel_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("INVALID_NAME".into());
+    }
+    let base = st
+        .downloads_dir
+        .canonicalize()
+        .unwrap_or(st.downloads_dir.clone());
+    let full = st.downloads_dir.join(rel_path);
+    let canon = full
+        .canonicalize()
+        .map_err(|_| "NOT_FOUND".to_string())?;
+    if !canon.starts_with(&base) {
+        return Err("INVALID_NAME".into());
+    }
+    Ok(canon)
+}
+
 pub async fn delete_file(st: &SharedState, name: String) -> Result<(), String> {
-    let safe = std::path::Path::new(&name)
-        .file_name()
-        .ok_or("INVALID_NAME")?
-        .to_string_lossy()
-        .to_string();
-    let path = st.downloads_dir.join(&safe);
+    let path = resolve_download_path(st, &name)?;
     if !path.exists() {
         return Err("NOT_FOUND".into());
     }

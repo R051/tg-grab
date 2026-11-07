@@ -46,6 +46,28 @@ impl TaskResult {
 }
 
 /// Map raw MTProto errors to stable frontend error codes.
+/// Drop a queued job or flag the in-flight one for cancellation.
+pub async fn cancel_job(st: &SharedState, id: u64) -> Result<(), String> {
+    // Queued: simply remove.
+    {
+        let mut pending = st.queue.pending.lock().await;
+        let before = pending.len();
+        pending.retain(|j| j.id != id);
+        if pending.len() != before {
+            drop(pending);
+            st.queue.persist(&st.queue_path).await;
+            return Ok(());
+        }
+    }
+    // In flight: flag it — the writer aborts between chunks.
+    st.queue.cancel_flags.lock().unwrap().insert(id);
+    Ok(())
+}
+
+fn is_cancelled(st: &SharedState, id: u64) -> bool {
+    st.queue.cancel_flags.lock().unwrap().contains(&id)
+}
+
 fn friendly_error(err: &str) -> String {
     if err.contains("FLOOD_WAIT") {
         "RATE_LIMITED".to_string()
@@ -220,13 +242,32 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         None => return fail_str("NOT_A_VIDEO"),
     };
 
+    // Optional per-channel/date subdirectories.
+    let cfg_dl = st.config.read().await.clone();
+    let base_dir = if cfg_dl.organize_by_channel {
+        let day = msg
+            .date()
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        let chan = sanitize_filename(
+            &rc.identity.title.clone().unwrap_or_else(|| "未知频道".into()),
+        );
+        let dir = st.downloads_dir.join(chan).join(day);
+        std::fs::create_dir_all(&dir).ok();
+        dir
+    } else {
+        st.downloads_dir.clone()
+    };
+    drop(cfg_dl);
+
     let mut file_name = sanitize_filename(
         &meta
             .name
             .clone()
             .unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
     );
-    let mut target = st.downloads_dir.join(&file_name);
+    let mut target = base_dir.join(&file_name);
     let total = meta.size;
 
     // Skip complete files; on a same-name/size-mismatch collision (channels
@@ -261,14 +302,14 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             .map(|e| format!(".{}", e.to_string_lossy()))
             .unwrap_or_default();
         file_name = format!("{stem}_{msg_id}{ext}");
-        target = st.downloads_dir.join(&file_name);
+        target = base_dir.join(&file_name);
     }
 
     // Download into a .part temp file with a chunk journal (.part.progress).
     // A verified-complete file is renamed to the real name; an interrupted
     // one is RESUMED from its completed chunks on the next attempt.
-    let part_path = st.downloads_dir.join(format!("{file_name}.part"));
-    let journal_path = st.downloads_dir.join(format!("{file_name}.part.progress"));
+    let part_path = base_dir.join(format!("{file_name}.part"));
+    let journal_path = base_dir.join(format!("{file_name}.part.progress"));
 
     // Resume detection: keep the partial only if its journal matches.
     let mut resume_done: Option<std::collections::HashSet<u64>> = None;
@@ -335,7 +376,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         }
     });
 
-    let result = match download_parallel(st, &client, &media, &part_path, total, done, resume_done, &journal_path).await {
+    let result = match download_parallel(st, &client, &media, &part_path, total, done, resume_done, &journal_path, job.id).await {
         Ok(()) => match tokio::fs::rename(&part_path, &target).await {
             Ok(()) => TaskResult {
                 id: job.id,
@@ -405,6 +446,7 @@ async fn download_parallel(
     done: Arc<AtomicU64>,
     resume_done: Option<std::collections::HashSet<u64>>,
     journal_path: &std::path::Path,
+    job_id: u64,
 ) -> Result<(), String> {
     let location = media.to_raw_input_location().ok_or("NOT_A_VIDEO")?;
     let session = st.session.read().await.clone().ok_or("NOT_LOGGED_IN")?;
@@ -437,16 +479,21 @@ async fn download_parallel(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>, u64)>();
 
     let mut tasks = Vec::new();
+    let st_for_workers = st.clone();
     for _ in 0..PARALLEL_WORKERS {
         let location = location.clone();
         let tx = tx.clone();
         let remaining = remaining.clone();
         let client = client.clone();
         let done = done.clone();
+        let st_w = st_for_workers.clone();
         tasks.push(tokio::spawn(async move {
             let mut dc = home_dc;
             let mut retry_index: Option<u64> = None;
             loop {
+                if is_cancelled(&st_w, job_id) {
+                    return Err("CANCELLED".into());
+                }
                 // Claim the next chunk index.
                 let index: u64 = match retry_index.take() {
                     Some(i) => i,

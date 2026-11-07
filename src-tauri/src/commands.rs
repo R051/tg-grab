@@ -97,6 +97,11 @@ pub async fn clear_thumbs(st: State<'_, SharedState>) -> Result<u64, String> {
 }
 
 #[tauri::command]
+pub async fn queue_cancel(st: State<'_, SharedState>, id: u64) -> Result<(), String> {
+    api::queue_cancel(&st, id).await
+}
+
+#[tauri::command]
 pub async fn list_files(st: State<'_, SharedState>) -> Result<Vec<api::DownloadedFile>, String> {
     api::list_files(&st).await
 }
@@ -176,13 +181,20 @@ pub async fn reveal_file(
 ) -> Result<(), String> {
     use tauri::Manager;
     use tauri_plugin_opener::OpenerExt;
-    let safe = std::path::Path::new(&name)
-        .file_name()
-        .ok_or("INVALID_NAME")?
-        .to_string_lossy()
-        .to_string();
-    let path = st.downloads_dir.join(safe);
+    let rel_path = std::path::Path::new(&name);
+    if rel_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("INVALID_NAME".into());
+    }
+    let base = st.downloads_dir.canonicalize().unwrap_or(st.downloads_dir.clone());
+    let full = st.downloads_dir.join(rel_path);
+    let canon = full.canonicalize().map_err(|_| "NOT_FOUND".to_string())?;
+    if !canon.starts_with(&base) {
+        return Err("INVALID_NAME".into());
+    }
     app.opener()
-        .reveal_item_in_dir(&path)
+        .reveal_item_in_dir(&canon)
         .map_err(|e| e.to_string())
 }

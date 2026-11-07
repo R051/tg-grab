@@ -77,6 +77,7 @@ export default {
       MESSAGE_NOT_FOUND: "Message not found",
       NOT_A_VIDEO: "That message is not a video",
       RATE_LIMITED: "Rate limited by Telegram, try again later",
+      CANCELLED: "Cancelled",
       CHANNEL_UNAVAILABLE: "Channel unavailable — check that you joined it",
       API_NOT_CONFIGURED: "Configure API credentials first",
     },

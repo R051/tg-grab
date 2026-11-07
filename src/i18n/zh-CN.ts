@@ -79,6 +79,7 @@ export default {
       MESSAGE_NOT_FOUND: "未找到该消息",
       NOT_A_VIDEO: "该消息不是视频",
       RATE_LIMITED: "被 Telegram 限流，请稍后重试",
+      CANCELLED: "已取消",
       CHANNEL_UNAVAILABLE: "频道不可用，确认已加入",
       API_NOT_CONFIGURED: "请先配置 API 凭证",
     },

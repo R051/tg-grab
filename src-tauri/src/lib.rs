@@ -88,6 +88,7 @@ pub fn run() {
             commands::download_urls,
             commands::get_queue,
             commands::queue_move,
+            commands::queue_cancel,
             commands::clear_thumbs,
             commands::list_files,
             commands::delete_file,

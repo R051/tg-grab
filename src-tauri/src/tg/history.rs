@@ -130,9 +130,13 @@ pub async fn browse(
                 break;
             }
         }
-        if let Some(info) =
-            video_entry(st, &msg, identity.username.as_deref(), identity.raw_id)
-        {
+        if let Some(info) = video_entry(
+            st,
+            &msg,
+            identity.username.as_deref(),
+            identity.raw_id,
+            identity.title.as_deref().unwrap_or(""),
+        ) {
             videos.push(info);
             if videos.len() >= page_cap {
                 // Page full — more content may exist below (unless the
@@ -165,6 +169,7 @@ fn video_entry(
     msg: &Message,
     username: Option<&str>,
     raw_id: i64,
+    channel_title: &str,
 ) -> Option<VideoInfo> {
     let media = msg.media()?;
     let meta = crate::tg::video_meta(&media)?;
@@ -172,8 +177,32 @@ fn video_entry(
     let name = sanitize_filename(
         &meta.name.unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
     );
-    let path = st.downloads_dir.join(&name);
-    let local = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    // The file may sit at the downloads root (legacy) or inside the
+    // organized <channel>/<date>/ subdirectories — check both.
+    let day = msg
+        .date()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d")
+        .to_string();
+    let chan = sanitize_filename(
+        if channel_title.is_empty() {
+            username.unwrap_or("未知频道")
+        } else {
+            channel_title
+        },
+    );
+    let candidates = [
+        st.downloads_dir.join(&name),
+        st.downloads_dir.join(&chan).join(&day).join(&name),
+    ];
+    let mut local: u64 = 0;
+    for c in &candidates {
+        if let Ok(m) = std::fs::metadata(c) {
+            local = m.len();
+            break;
+        }
+    }
     let downloaded = meta.size > 0 && local == meta.size;
 
     // A thumbnail counts as available if cached on disk or offered by the server.

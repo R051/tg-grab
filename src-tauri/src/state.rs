@@ -36,6 +36,8 @@ pub struct QueueState {
     /// The job currently being downloaded (journalled so a restart can
     /// re-queue it instead of losing it).
     pub in_flight: Mutex<Option<Job>>,
+    /// Jobs the user asked to cancel (checked by the writer loop).
+    pub cancel_flags: std::sync::Mutex<std::collections::HashSet<u64>>,
     pub results: Mutex<Vec<TaskResult>>,
     pub active: Mutex<Option<ActiveTask>>,
     /// Where the pending-journal lives (set at startup).
@@ -71,6 +73,7 @@ impl QueueState {
             results: Mutex::new(Vec::new()),
             active: Mutex::new(None),
             path,
+            cancel_flags: std::sync::Mutex::new(std::collections::HashSet::new()),
             no_auth_until: std::sync::atomic::AtomicU64::new(0),
         }
     }

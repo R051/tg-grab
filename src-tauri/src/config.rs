@@ -56,6 +56,9 @@ pub struct Config {
     /// Web mode: listen port.
     #[serde(default)]
     pub server_port: Option<u16>,
+    /// Save downloads into <channel>/<date>/ subdirectories.
+    #[serde(default)]
+    pub organize_by_channel: bool,
 }
 
 fn default_concurrency() -> usize {
