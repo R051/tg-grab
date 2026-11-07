@@ -33,6 +33,9 @@ pub struct ActiveTask {
 pub struct QueueState {
     pub next_id: std::sync::atomic::AtomicU64,
     pub pending: Mutex<VecDeque<Job>>,
+    /// The job currently being downloaded (journalled so a restart can
+    /// re-queue it instead of losing it).
+    pub in_flight: Mutex<Option<Job>>,
     pub results: Mutex<Vec<TaskResult>>,
     pub active: Mutex<Option<ActiveTask>>,
     /// Where the pending-journal lives (set at startup).
@@ -46,12 +49,17 @@ impl QueueState {
     /// Write the pending jobs to disk so a restart can restore them.
     pub async fn persist(&self, path: &std::path::Path) {
         let pending = self.pending.lock().await;
-        let jobs: Vec<&Job> = pending.iter().collect();
-        let json = serde_json::json!({ "jobs": jobs
-            .iter()
-            .map(|j| serde_json::json!({"id": j.id, "url": j.url}))
-            .collect::<Vec<_>>() });
+        let inflight = self.in_flight.lock().await;
+        let mut list: Vec<serde_json::Value> = Vec::new();
+        if let Some(j) = inflight.as_ref() {
+            list.push(serde_json::json!({"id": j.id, "url": j.url}));
+        }
+        for j in pending.iter() {
+            list.push(serde_json::json!({"id": j.id, "url": j.url}));
+        }
+        drop(inflight);
         drop(pending);
+        let json = serde_json::json!({ "jobs": list });
         let _ = std::fs::write(path, serde_json::to_vec(&json).unwrap_or_default());
     }
 
@@ -59,6 +67,7 @@ impl QueueState {
         Self {
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(VecDeque::new()),
+            in_flight: Mutex::new(None),
             results: Mutex::new(Vec::new()),
             active: Mutex::new(None),
             path,

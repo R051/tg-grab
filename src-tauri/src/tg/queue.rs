@@ -155,7 +155,9 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             let mut pending = st.queue.pending.lock().await;
             let j = pending.pop_front();
             drop(pending);
-            // Journal the remaining pending jobs after every take.
+            // Journal: the taken job moves to in_flight so a crash mid-
+            // download still knows about it.
+            *st.queue.in_flight.lock().await = j.clone();
             st.queue.persist(&st.queue_path).await;
             j
         };
@@ -175,6 +177,8 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             }
         }
         *st.queue.active.lock().await = None;
+        *st.queue.in_flight.lock().await = None;
+        st.queue.persist(&st.queue_path).await;
         let _ = app.emit("queue:result", &result);
     }
 }
