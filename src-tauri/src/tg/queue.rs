@@ -380,8 +380,12 @@ fn write_journal(path: &std::path::Path, total: u64, written: &std::collections:
         chunk: CHUNK,
         done: written.iter().copied().collect(),
     };
+    // Atomic write: a hard kill mid-write must never truncate the journal.
     if let Ok(bytes) = serde_json::to_vec(&j) {
-        let _ = std::fs::write(path, bytes);
+        let tmp = path.with_extension("progress.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
