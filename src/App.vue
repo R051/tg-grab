@@ -19,16 +19,26 @@ const tab = ref("download");
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: "#2ea043",
-    primaryColorHover: "#3fb950",
-    primaryColorPressed: "#238636",
-    primaryColorSuppl: "#3fb950",
-    cardColor: "#12181f",
-    inputColor: "#0d1117",
-    actionColor: "#12181f",
-    borderColor: "#21262d",
-    borderRadius: "8px",
+    primaryColor: "#10b981",
+    primaryColorHover: "#34d399",
+    primaryColorPressed: "#059669",
+    primaryColorSuppl: "#34d399",
+    bodyColor: "#0a0a0c",
+    cardColor: "#111114",
+    inputColor: "#0c0d10",
+    actionColor: "#111114",
+    borderColor: "rgba(255, 255, 255, 0.09)",
+    dividerColor: "rgba(255, 255, 255, 0.06)",
+    borderRadius: "10px",
+    fontWeight: "500",
   },
+  Button: {
+    colorPrimary: "#10b981",
+    colorHoverPrimary: "#34d399",
+    colorPressedPrimary: "#059669",
+    borderPrimary: "1px solid rgba(16, 185, 129, 0.4)",
+  },
+  Card: { borderRadius: "14px" },
 };
 
 const navs = computed(() => [
