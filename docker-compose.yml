@@ -1,0 +1,12 @@
+services:
+  tg-grab:
+    build: .
+    container_name: tg-grab
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # optional overrides:
+    # environment:
+    #   TG_GRAB_PORT: 8080

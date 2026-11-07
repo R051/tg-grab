@@ -1,0 +1,13 @@
+node_modules
+target
+dist
+data
+downloads
+*.session
+*.session-journal
+config.json
+queue.json
+.git
+.vscode
+docs
+*.log
