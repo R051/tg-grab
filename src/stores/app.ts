@@ -16,6 +16,8 @@ let initialized = false;
 export const useAppStore = defineStore("app", {
   state: () => ({
     status: null as Status | null,
+    lastSample: null as { id: number; ts: number; current: number } | null,
+    speed: 0,
     settings: null as AppSettings | null,
     pending: [] as { id: number; url: string }[],
     active: null as ActiveTask | null,
@@ -59,7 +61,19 @@ export const useAppStore = defineStore("app", {
       await this.refreshFiles().catch(() => undefined);
 
       on("queue:progress", (p) => {
-        this.active = p as ActiveTask;
+        const a = p as ActiveTask;
+        const now = Date.now();
+        if (this.lastSample && this.lastSample.id === a.id) {
+          const dt = (now - this.lastSample.ts) / 1000;
+          if (dt > 0.2) {
+            this.speed = Math.max(0, (a.current - this.lastSample.current) / dt);
+            this.lastSample = { id: a.id, ts: now, current: a.current };
+          }
+        } else {
+          this.speed = 0;
+          this.lastSample = { id: a.id, ts: now, current: a.current };
+        }
+        this.active = a;
       });
       on("queue:result", (p) => {
         const r = p as TaskResult;

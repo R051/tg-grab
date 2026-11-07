@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, fileUrl, isDesktop } from "../lib/backend";
 import { NButton, NInput, NProgress, useMessage } from "naive-ui";
@@ -13,6 +13,9 @@ const message = useMessage();
 
 const input = ref("");
 const submitting = ref(false);
+const filter = ref<"all" | "active" | "done" | "failed">("all");
+const speed = ref(0);
+let lastSample: { id: number; ts: number; current: number } | null = null;
 
 const stats = computed(() => [
   { num: store.pending.length + (store.active ? 1 : 0), label: t("download.status.downloading") },
@@ -28,6 +31,13 @@ function fmtSize(bytes: number | undefined | null): string {
   if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
   return `${(b / 1073741824).toFixed(2)} GB`;
 }
+
+const FILTERS = [
+  { key: "all", label: "全部" },
+  { key: "active", label: "进行中" },
+  { key: "done", label: "已完成" },
+  { key: "failed", label: "失败" },
+] as const;
 
 const ERR_KEYS = [
   "INVALID_LINK",
@@ -63,7 +73,7 @@ interface Row {
 }
 
 /** One row per task — status transitions in place (Gopeed-style). */
-const taskRows = computed<Row[]>(() => {
+const taskRowsRaw = computed<Row[]>(() => {
   const rows: Row[] = [];
   const seen = new Set<number>();
 
@@ -98,6 +108,51 @@ const taskRows = computed<Row[]>(() => {
   }
   return rows;
 });
+
+watch(taskRowsRaw, (rows) => {
+  const a = rows.find((r) => r.kind === "active");
+  if (a) trackSpeed(a);
+});
+
+const taskRows = computed<Row[]>(() => {
+  const f = filter.value;
+  if (f === "all") return taskRowsRaw.value;
+  return taskRowsRaw.value.filter((r) => {
+    if (f === "active") return r.kind === "active" || r.kind === "queued";
+    if (f === "done") return r.kind === "success" || r.kind === "cached";
+    return r.kind === "failed";
+  });
+});
+
+/** Live speed (bytes/sec) computed from consecutive progress samples. */
+function trackSpeed(row: Row) {
+  if (row.kind !== "active") return;
+  const now = Date.now();
+  if (lastSample && lastSample.id === row.id) {
+    const dt = (now - lastSample.ts) / 1000;
+    if (dt > 0.2) {
+      speed.value = Math.max(0, ((row.current ?? 0) - lastSample.current) / dt);
+      lastSample = { id: row.id, ts: now, current: row.current ?? 0 };
+    }
+  } else {
+    lastSample = { id: row.id, ts: now, current: row.current ?? 0 };
+  }
+}
+
+function fmtEta(row: Row): string {
+  const sp = speed.value;
+  if (sp <= 0 || !row.total) return "";
+  const remain = row.total - (row.current ?? 0);
+  if (remain <= 0) return "";
+  const sec = Math.round(remain / sp);
+  const m = Math.floor(sec / 60);
+  const s2 = sec % 60;
+  return m > 0 ? `${m}分${String(s2).padStart(2, "0")}秒` : `${s2}秒`;
+}
+
+function cancelTask(row: Row) {
+  void invoke("queue_cancel", { id: row.id }).then(() => store.refreshQueue()).catch((e) => message.error(String(e)));
+}
 
 function rowTitle(row: Row): string {
   if (row.name) return row.name;
@@ -224,6 +279,17 @@ async function startDownload() {
     <div class="panel-title">
       {{ t("download.queueTitle") }}
       <span class="count">{{ taskRows.length }}</span>
+      <div class="filters">
+        <button
+          v-for="f in FILTERS"
+          :key="f.key"
+          class="chip-filter"
+          :class="{ on: filter === f.key }"
+          @click="filter = f.key"
+        >
+          {{ f.label }}
+        </button>
+      </div>
     </div>
     <div v-if="!taskRows.length" class="empty">
       <span class="empty-icon">🗂</span>
@@ -238,6 +304,8 @@ async function startDownload() {
             <span class="pill" :class="statusMeta(row).pill">{{ statusMeta(row).label }}</span>
             <span v-if="row.kind === 'active' && row.current !== undefined">
               {{ fmtSize(row.current) }} / {{ fmtSize(row.total) }}
+              · {{ fmtSize(speed) }}/s
+              <template v-if="fmtEta(row)">· 剩余 {{ fmtEta(row) }}</template>
             </span>
             <span v-else-if="row.size">· {{ fmtSize(row.size) }}</span>
           </div>
@@ -251,6 +319,13 @@ async function startDownload() {
             style="margin-top: 5px"
           />
         </div>
+        <button
+          v-if="row.kind === 'active'"
+          class="ghost-btn row-action danger"
+          @click="cancelTask(row)"
+        >
+          ✕
+        </button>
         <template v-if="row.kind === 'queued'">
           <button
             v-if="rowIndexQueue(row.id) > 0"
@@ -267,6 +342,13 @@ async function startDownload() {
             @click="moveTask(row, false)"
           >
             ↑
+          </button>
+          <button
+            class="ghost-btn row-action danger"
+            :title="t('download.cancel')"
+            @click="cancelTask(row)"
+          >
+            ✕
           </button>
         </template>
         <button
@@ -317,5 +399,14 @@ async function startDownload() {
 .hero-input :deep(textarea) { font-size: 13.5px; }
 .hero-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .ghost-btn.danger:hover { border-color: var(--red); color: var(--red); }
-.row-item.k-active { background: rgba(88, 166, 255, 0.05); }
+.row-item.k-active { background: rgba(96, 165, 250, 0.05); }
+.filters { margin-left: auto; display: flex; gap: 4px; }
+.chip-filter {
+  background: none; border: 0; color: var(--text-faint);
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  padding: 2px 8px; border-radius: 999px; font-family: inherit;
+  transition: all 0.12s;
+}
+.chip-filter:hover { color: var(--text-dim); }
+.chip-filter.on { background: var(--accent-soft); color: var(--accent-bright); }
 </style>

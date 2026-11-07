@@ -1,6 +1,8 @@
 pub mod api;
 #[cfg(feature = "desktop")]
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Manager, WindowEvent};
 
 #[cfg(feature = "desktop")]
 mod commands;
@@ -104,7 +106,36 @@ pub fn run() {
             commands::history_recent_remove,
             commands::history_thumbs,
         ])
+        .on_window_event(|window, event| {
+            // Closing the window keeps the app resident in the tray.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
+            // Tray icon: the app keeps downloading while hidden.
+            let show = MenuItem::with_id(app, "show", "显示 tg-grab", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show, &quit])?;
+            let mut tray = TrayIconBuilder::new()
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, ev| match ev.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+            if let Some(icon) = app.default_window_icon() {
+                tray.set_icon(Some(icon.clone()));
+            }
+
             let data_dir = app.path().app_data_dir()?;
             let st = tauri::async_runtime::block_on(async {
                 let st = init_core(data_dir).await;

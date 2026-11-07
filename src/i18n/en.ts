@@ -66,6 +66,7 @@ export default {
     deleted: "Deleted",
     retry: "Retry",
     toTop: "Move to top",
+    cancel: "Cancel download",
     moveUp: "Move up",
     noFiles: "Nothing downloaded yet",
     filesTitle: "Downloaded",

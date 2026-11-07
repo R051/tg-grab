@@ -68,6 +68,7 @@ export default {
     deleted: "已删除",
     retry: "重试",
     toTop: "置顶队列",
+    cancel: "取消下载",
     moveUp: "上移",
     noFiles: "还没有下载过文件",
     filesTitle: "已下载",
