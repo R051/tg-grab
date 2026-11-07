@@ -9,8 +9,8 @@ export interface Status {
 }
 
 export type SignInOutcome =
-  | { status: "Ok"; user: string }
-  | { status: "NeedPassword"; hint: string | null };
+  | { status: "ok"; user: string }
+  | { status: "need_password"; hint: string | null };
 
 export interface ActiveTask {
   id: number;
@@ -35,6 +35,7 @@ export interface TaskResult {
 export interface QueueSnapshot {
   pending: { id: number; url: string }[];
   active: ActiveTask | null;
+  activeTasks: ActiveTask[];
   results: TaskResult[];
 }
 
@@ -74,6 +75,7 @@ export interface HistoryPage {
   chat: { rawId: number; title: string };
   videos: VideoInfo[];
   nextOffset: number;
+  nextDate: string | null;
   exhausted: boolean;
 }
 

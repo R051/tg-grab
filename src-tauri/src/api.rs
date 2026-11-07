@@ -6,8 +6,8 @@ use crate::state::{ActiveTask, SharedState};
 use crate::tg::auth::{self, SignInOutcome};
 use crate::tg::client::{ensure_client, logged_in_name, resolve_chat};
 use crate::tg::history::HistoryPage;
+use crate::tg::MediaKind;
 use crate::tg::links::{make_msg_link, parse_chat_link};
-use crate::tg::queue::TaskResult;
 use serde::Serialize;
 
 fn save(st: &SharedState, cfg: &Config) -> Result<(), String> {
@@ -74,25 +74,36 @@ pub async fn get_status(st: &SharedState) -> Result<Status, String> {
     }
 }
 
-pub async fn save_api_config(st: &SharedState, api_id: String, api_hash: String) -> Result<(), String> {
+pub async fn save_api_config(
+    st: &SharedState,
+    api_id: String,
+    api_hash: String,
+) -> Result<(), String> {
+    let _auth = st.auth_lock.lock().await;
     let id: i32 = api_id.trim().parse().map_err(|_| "INVALID_API_ID")?;
     let hash = api_hash.trim().to_string();
-    if hash.is_empty() {
+    if id <= 0 || hash.len() != 32 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("INVALID_API_ID".into());
     }
     {
         let mut cfg = st.config.write().await;
+        if cfg.api_id == Some(id) && cfg.api_hash.as_deref() == Some(hash.as_str()) {
+            return Ok(());
+        }
         cfg.api_id = Some(id);
         cfg.api_hash = Some(hash);
         save(st, &cfg)?;
     }
     // Credentials changed → drop the old connection and session.
     crate::tg::client::reset_client(st).await;
+    *st.login_token.lock().await = None;
+    *st.password_token.lock().await = None;
     let _ = std::fs::remove_file(&st.session_path);
     Ok(())
 }
 
 pub async fn save_proxy(st: &SharedState, proxy_url: String) -> Result<(), String> {
+    let _auth = st.auth_lock.lock().await;
     {
         let mut cfg = st.config.write().await;
         let url = proxy_url.trim().to_string();
@@ -107,13 +118,35 @@ pub async fn save_settings(
     st: &SharedState,
     concurrency: Option<u32>,
     lang: Option<String>,
+    downloads_dir: Option<String>,
+    media_kinds: Option<Vec<String>>,
+    classify_by_type: Option<bool>,
 ) -> Result<(), String> {
     let mut cfg = st.config.write().await;
     if let Some(c) = concurrency {
         cfg.concurrency = c.clamp(1, 4) as usize;
     }
     if let Some(l) = lang {
+        if l != "zh-CN" && l != "en" {
+            return Err("INVALID_LANGUAGE".into());
+        }
         cfg.lang = l;
+    }
+    if let Some(d) = downloads_dir {
+        let d = d.trim().to_string();
+        cfg.downloads_dir = if d.is_empty() { None } else { Some(d.into()) };
+    }
+    if let Some(kinds) = media_kinds {
+        let cleaned: Vec<String> = kinds
+            .into_iter()
+            .filter(|k| MediaKind::parse(k).is_some())
+            .collect();
+        if !cleaned.is_empty() {
+            cfg.media_kinds = cleaned;
+        }
+    }
+    if let Some(c) = classify_by_type {
+        cfg.classify_by_type = c;
     }
     save(st, &cfg)
 }
@@ -133,7 +166,7 @@ pub async fn auth_sign_in(st: &SharedState, code: String) -> Result<SignInOutcom
 }
 
 pub async fn auth_check_password(st: &SharedState, password: String) -> Result<String, String> {
-    auth::check_password(st, password.trim()).await
+    auth::check_password(st, &password).await
 }
 
 pub async fn logout(st: &SharedState) -> Result<(), String> {
@@ -145,23 +178,29 @@ pub async fn logout(st: &SharedState) -> Result<(), String> {
 // ── download queue ──
 
 pub async fn download_urls(st: &SharedState, urls: Vec<String>) -> Result<Vec<u64>, String> {
-    if st.client.read().await.is_none() {
+    let client = ensure_client(st).await?;
+    if !client.is_authorized().await.map_err(|e| e.to_string())? {
         return Err("NOT_LOGGED_IN".into());
     }
     let urls: Vec<String> = urls
         .into_iter()
         .map(|u| u.trim().to_string())
         .filter(|u| !u.is_empty())
-        .collect();
+        .map(|url| crate::tg::links::canonical_msg_link(&url))
+        .collect::<Result<_, _>>()?;
     if urls.is_empty() {
         return Err("INVALID_LINK".into());
     }
-    Ok(st.queue.enqueue(urls).await)
+    let ids = st.queue.enqueue(urls).await;
+    st.bus.emit("queue:changed", serde_json::Value::Bool(true));
+    Ok(ids)
 }
 
 /// Cancel a queued or in-flight download.
 pub async fn queue_cancel(st: &SharedState, id: u64) -> Result<(), String> {
-    crate::tg::queue::cancel_job(st, id).await
+    crate::tg::queue::cancel_job(st, id).await?;
+    st.bus.emit("queue:changed", serde_json::Value::Bool(true));
+    Ok(())
 }
 
 pub async fn get_queue(st: &SharedState) -> Result<serde_json::Value, String> {
@@ -171,10 +210,7 @@ pub async fn get_queue(st: &SharedState) -> Result<serde_json::Value, String> {
 /// Raise a queued job's priority: move it up one slot, or to the very front.
 pub async fn queue_move(st: &SharedState, id: u64, to_front: bool) -> Result<(), String> {
     let mut pending = st.queue.pending.lock().await;
-    let idx = pending
-        .iter()
-        .position(|j| j.id == id)
-        .ok_or("NOT_FOUND")?;
+    let idx = pending.iter().position(|j| j.id == id).ok_or("NOT_FOUND")?;
     let job = pending.remove(idx).unwrap();
     if to_front {
         pending.push_front(job);
@@ -184,12 +220,18 @@ pub async fn queue_move(st: &SharedState, id: u64, to_front: bool) -> Result<(),
     }
     drop(pending);
     st.queue.persist(&st.queue_path).await;
+    st.bus.emit("queue:changed", serde_json::Value::Bool(true));
     Ok(())
 }
 
 /// Delete all cached thumbnails, returning bytes freed.
-pub async fn clear_thumbs(st: &SharedState) -> Result<u64, String> {
-    let thumbs_dir = st.downloads_dir.join("thumbs");
+#[derive(Debug, Serialize)]
+pub struct ClearedThumbs {
+    pub freed: u64,
+}
+
+pub async fn clear_thumbs(st: &SharedState) -> Result<ClearedThumbs, String> {
+    let thumbs_dir = st.downloads_root().await.join("thumbs");
     let mut freed: u64 = 0;
     let mut cleared = false;
     if let Ok(rd) = std::fs::read_dir(&thumbs_dir) {
@@ -206,7 +248,7 @@ pub async fn clear_thumbs(st: &SharedState) -> Result<u64, String> {
     if cleared {
         let _ = std::fs::remove_dir(&thumbs_dir);
     }
-    Ok(freed)
+    Ok(ClearedThumbs { freed })
 }
 
 #[derive(Debug, Serialize)]
@@ -218,7 +260,7 @@ pub struct DownloadedFile {
 
 pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String> {
     let mut files = Vec::new();
-    let base = st.downloads_dir.clone();
+    let base = st.downloads_root().await;
     let mut stack = vec![base.clone()];
     while let Some(dir) = stack.pop() {
         let mut rd = match tokio::fs::read_dir(&dir).await {
@@ -226,11 +268,26 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
             Err(_) => continue,
         };
         while let Ok(Some(entry)) = rd.next_entry().await {
-            let Ok(meta) = entry.metadata().await else { continue };
+            let Ok(kind) = entry.file_type().await else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
             if meta.is_dir() {
                 if entry.file_name() != "thumbs" {
                     stack.push(entry.path());
                 }
+                continue;
+            }
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if filename.ends_with(".part")
+                || filename.ends_with(".progress")
+                || filename.ends_with(".tmp")
+            {
                 continue;
             }
             let rel = entry
@@ -238,7 +295,7 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
                 .strip_prefix(&base)
                 .unwrap_or(entry.path().as_path())
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             files.push(DownloadedFile {
                 name: rel,
                 size: meta.len(),
@@ -251,16 +308,24 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
 
 /// Resolve a user-supplied relative file name inside downloads_dir,
 /// rejecting path traversal.
-fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::path::PathBuf, String> {
-    let rel_path = std::path::Path::new(rel);
-    if rel_path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+pub async fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::path::PathBuf, String> {
+    let normalized = rel.replace('\\', "/");
+    let rel_path = std::path::Path::new(&normalized);
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
         return Err("INVALID_NAME".into());
     }
-    let base = st
-        .downloads_dir
+    let root = st.downloads_root().await;
+    let base = root
         .canonicalize()
-        .unwrap_or(st.downloads_dir.clone());
-    let full = st.downloads_dir.join(rel_path);
+        .unwrap_or_else(|_| root.clone());
+    let full = root.join(rel_path);
     let canon = full
         .canonicalize()
         .map_err(|_| "NOT_FOUND".to_string())?;
@@ -271,7 +336,7 @@ fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::path::PathB
 }
 
 pub async fn delete_file(st: &SharedState, name: String) -> Result<(), String> {
-    let path = resolve_download_path(st, &name)?;
+    let path = resolve_download_path(st, &name).await?;
     if !path.exists() {
         return Err("NOT_FOUND".into());
     }
@@ -299,8 +364,14 @@ pub async fn watch_add(
         return Err("NOT_A_CHANNEL".into());
     }
 
-    let mut cfg = st.config.write().await;
-    if cfg.watched.iter().any(|w| w.raw_id == identity.raw_id) {
+    if st
+        .config
+        .read()
+        .await
+        .watched
+        .iter()
+        .any(|w| w.raw_id == identity.raw_id)
+    {
         return Err("ALREADY_WATCHED".into());
     }
 
@@ -322,6 +393,10 @@ pub async fn watch_add(
         enabled: true,
         last_msg_id,
     };
+    let mut cfg = st.config.write().await;
+    if cfg.watched.iter().any(|w| w.raw_id == identity.raw_id) {
+        return Err("ALREADY_WATCHED".into());
+    }
     cfg.watched.push(entry.clone());
     save(st, &cfg)?;
     drop(cfg);
@@ -338,7 +413,7 @@ pub async fn watch_add(
                 break;
             }
             if let Some(media) = msg.media() {
-                if crate::tg::video_meta(&media).is_some() {
+                if crate::tg::media_meta(&media).is_some() {
                     urls.push(make_msg_link(
                         entry.username.as_deref(),
                         entry.raw_id,
@@ -400,12 +475,15 @@ pub async fn history_page(
     link: String,
     offset_id: i32,
     date: Option<String>,
+    day_start: Option<i64>,
+    day_end: Option<i64>,
 ) -> Result<HistoryPage, String> {
     let client = ensure_client(st).await?;
     if !client.is_authorized().await.unwrap_or(false) {
         return Err("NOT_LOGGED_IN".into());
     }
-    let page = crate::tg::history::browse(st, &client, &link, offset_id, date).await?;
+    let page =
+        crate::tg::history::browse(st, &client, &link, offset_id, date, day_start, day_end).await?;
 
     // Auto-remember the channel for the history page's quick chips.
     if page.chat.raw_id != 0 {
@@ -416,12 +494,10 @@ pub async fn history_page(
                 raw_id: page.chat.raw_id,
                 access_hash: 0,
                 title: page.chat.title.clone(),
-                username: parse_chat_link(&link)
-                    .ok()
-                    .and_then(|l| match l {
-                        crate::tg::links::ChatLink::Username(u) => Some(u),
-                        _ => None,
-                    }),
+                username: parse_chat_link(&link).ok().and_then(|l| match l {
+                    crate::tg::links::ChatLink::Username(u) => Some(u),
+                    _ => None,
+                }),
                 enabled: false,
                 last_msg_id: 0,
             };
@@ -430,9 +506,7 @@ pub async fn history_page(
             if len > 12 {
                 cfg.recent.truncate(12);
             }
-            let snapshot = cfg.clone();
-            drop(cfg);
-            let _ = snapshot.save(&st.config_path);
+            cfg.save(&st.config_path)?;
         }
     }
     Ok(page)

@@ -1,5 +1,6 @@
 //! App configuration persistence (api credentials, proxy, watched channels, prefs).
 
+use crate::tg::MediaKind;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -47,9 +48,6 @@ pub struct Config {
     /// UI language: "zh-CN" | "en".
     #[serde(default = "default_lang")]
     pub lang: String,
-    /// Where downloaded files go (absolute path, set on first run).
-    #[serde(default)]
-    pub downloads_dir: Option<PathBuf>,
     /// Web mode: access token (auto-generated on first `--serve` run).
     #[serde(default)]
     pub server_token: Option<String>,
@@ -59,6 +57,15 @@ pub struct Config {
     /// Save downloads into <channel>/<date>/ subdirectories.
     #[serde(default)]
     pub organize_by_channel: bool,
+    /// Further split organized downloads by media type (video/photo/...).
+    #[serde(default)]
+    pub classify_by_type: bool,
+    /// Media kinds to auto-download: video/photo/audio/document.
+    #[serde(default = "default_media_kinds")]
+    pub media_kinds: Vec<String>,
+    /// Custom downloads root (falls back to <data>/downloads).
+    #[serde(default)]
+    pub downloads_dir: Option<PathBuf>,
 }
 
 fn default_concurrency() -> usize {
@@ -67,6 +74,10 @@ fn default_concurrency() -> usize {
 
 fn default_lang() -> String {
     "zh-CN".into()
+}
+
+fn default_media_kinds() -> Vec<String> {
+    vec!["video".into()]
 }
 
 impl Config {
@@ -87,6 +98,11 @@ impl Config {
         if self.lang.is_empty() {
             self.lang = "zh-CN".into();
         }
+        if self.media_kinds.is_empty() {
+            self.media_kinds = default_media_kinds();
+        }
+        self.media_kinds
+            .retain(|k| MediaKind::parse(k).is_some());
         self.concurrency = self.concurrency.clamp(1, 4);
     }
 
@@ -95,6 +111,9 @@ impl Config {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| e.to_string())
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)
+            .and_then(|_| std::fs::rename(tmp, path))
+            .map_err(|e| e.to_string())
     }
 }

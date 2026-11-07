@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { errorText } from "../lib/errors";
 import { invoke } from "../lib/backend";
 import {
   NButton,
@@ -21,31 +22,20 @@ const backfill = ref(false);
 const adding = ref(false);
 const busy = ref(false);
 
-const ERR_KEYS = [
-  "ALREADY_WATCHED",
-  "CHAT_NOT_FOUND",
-  "NOT_A_CHANNEL",
-] as const;
-
-function errText(e: unknown): string {
-  const raw = String(e);
-  const code = raw.includes(":") ? raw.split(":")[0].trim() : raw.trim();
-  for (const k of ERR_KEYS) {
-    if (code.startsWith(k)) return t(`watch.errors.${k}`);
-  }
-  return raw;
-}
+const rowBusy = ref<Set<number>>(new Set());
+function errText(error: unknown): string { return errorText(error, t); }
 
 async function addWatch() {
-  if (!link.value.trim()) return;
+  if (adding.value || !link.value.trim()) return;
+  const submittedLink = link.value.trim();
   adding.value = true;
   try {
     const entry = await invoke<WatchEntry>("watch_add", {
-      link: link.value.trim(),
+      link: submittedLink,
       backfill: backfill.value,
     });
     message.success(t("watch.added", { title: entry.title }));
-    link.value = "";
+    if (link.value.trim() === submittedLink) link.value = "";
     await store.refreshWatched();
   } catch (e) {
     message.error(errText(e));
@@ -55,25 +45,30 @@ async function addWatch() {
 }
 
 async function toggle(entry: WatchEntry) {
+  if (rowBusy.value.has(entry.raw_id)) return;
+  rowBusy.value.add(entry.raw_id);
   try {
     await invoke("watch_toggle", { rawId: entry.raw_id });
     await store.refreshWatched();
   } catch (e) {
-    message.error(String(e));
-  }
+    message.error(errText(e));
+  } finally { rowBusy.value.delete(entry.raw_id); }
 }
 
 async function remove(entry: WatchEntry) {
   if (!window.confirm(t("watch.deleteConfirm"))) return;
+  if (rowBusy.value.has(entry.raw_id)) return;
+  rowBusy.value.add(entry.raw_id);
   try {
     await invoke("watch_delete", { rawId: entry.raw_id });
     await store.refreshWatched();
   } catch (e) {
-    message.error(String(e));
-  }
+    message.error(errText(e));
+  } finally { rowBusy.value.delete(entry.raw_id); }
 }
 
 async function catchupNow() {
+  if (busy.value) return;
   busy.value = true;
   try {
     await invoke("watch_catchup");
@@ -136,10 +131,10 @@ async function catchupNow() {
           </div>
         </div>
         <div class="actions">
-          <button class="ghost-btn" @click="toggle(w)">
+          <button class="ghost-btn" :disabled="rowBusy.has(w.raw_id)" @click="toggle(w)">
             {{ w.enabled ? t("watch.pause") : t("watch.resume") }}
           </button>
-          <button class="ghost-btn danger" @click="remove(w)">{{ t("watch.delete") }}</button>
+          <button class="ghost-btn danger" :disabled="rowBusy.has(w.raw_id)" @click="remove(w)">{{ t("watch.delete") }}</button>
         </div>
       </div>
     </div>

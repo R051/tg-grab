@@ -32,8 +32,7 @@ The same binary codebase also runs as a **web server** — access the full UI fr
 
 ```bash
 # local run (frontend must be built once: npm run build)
-cd src-tauri
-cargo run --release --no-default-features --features server
+cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
 # → prints the access token, UI at http://0.0.0.0:8080
 
 # or with Docker

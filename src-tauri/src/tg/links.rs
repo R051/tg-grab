@@ -31,7 +31,9 @@ pub fn parse_chat_link(input: &str) -> Result<ChatLink, String> {
     let s = re(r"^(?:t\.me|telegram\.me)/").replace(&s, "");
 
     if let Some(m) = re(r"^c/(\d+)").captures(&s) {
-        return Ok(ChatLink::ChannelRaw(m[1].parse().map_err(|_| "INVALID_LINK")?));
+        return Ok(ChatLink::ChannelRaw(
+            m[1].parse().map_err(|_| "INVALID_LINK")?,
+        ));
     }
     let username = s
         .strip_prefix('@')
@@ -51,17 +53,15 @@ pub fn parse_chat_link(input: &str) -> Result<ChatLink, String> {
 /// Returns the chat reference and the message id.
 pub fn parse_msg_link(input: &str) -> Result<(ChatLink, i32), String> {
     let s = input.trim();
-    let url = s.split('?').next().unwrap_or(s);
+    let url = s.split(['?', '#']).next().unwrap_or(s);
 
-    if let Some(m) = re(r"(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)")
-        .captures(url)
-    {
+    if let Some(m) = re(r"^(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)/(\d+)/?$").captures(url) {
         return Ok((
             ChatLink::ChannelRaw(m[1].parse().map_err(|_| "INVALID_LINK")?),
             m[2].parse().map_err(|_| "INVALID_LINK")?,
         ));
     }
-    let m = re(r"(?:https?://)?(?:t\.me|telegram\.me)/([^/\s]+)/(\d+)")
+    let m = re(r"^(?:https?://)?(?:t\.me|telegram\.me)/([^/\s]+)/(\d+)/?$")
         .captures(url)
         .ok_or("INVALID_LINK")?;
     let entity = m[1].to_string();
@@ -72,11 +72,28 @@ pub fn parse_msg_link(input: &str) -> Result<(ChatLink, i32), String> {
             m[2].parse().map_err(|_| "INVALID_LINK")?,
         ));
     }
-    Ok((ChatLink::Username(entity), m[2].parse().map_err(|_| "INVALID_LINK")?))
+    Ok((
+        ChatLink::Username(entity),
+        m[2].parse().map_err(|_| "INVALID_LINK")?,
+    ))
 }
 
 trait IntCheck {
     fn lstrip_digits_is_int(&self) -> bool;
+}
+
+pub fn canonical_msg_link(input: &str) -> Result<String, String> {
+    let (chat, msg_id) = parse_msg_link(input)?;
+    if msg_id <= 0 {
+        return Err("INVALID_LINK".into());
+    }
+    Ok(match chat {
+        ChatLink::Username(username) => {
+            make_msg_link(Some(&username.to_ascii_lowercase()), 0, msg_id)
+        }
+        ChatLink::ChannelRaw(id) if id > 0 => make_msg_link(None, id, msg_id),
+        _ => return Err("INVALID_LINK".into()),
+    })
 }
 impl IntCheck for str {
     fn lstrip_digits_is_int(&self) -> bool {
@@ -88,7 +105,7 @@ impl IntCheck for str {
 /// Build a public message link used for queue display and later re-parsing.
 pub fn make_msg_link(username: Option<&str>, raw_id: i64, msg_id: i32) -> String {
     match username.filter(|u| !u.is_empty()) {
-        Some(u) => format!("https://t.me/{u}/{msg_id}"),
+        Some(u) => format!("https://t.me/{}/{msg_id}", u.to_ascii_lowercase()),
         None => format!("https://t.me/c/{raw_id}/{msg_id}"),
     }
 }

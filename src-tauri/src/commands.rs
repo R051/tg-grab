@@ -22,10 +22,7 @@ pub async fn save_api_config(
 }
 
 #[tauri::command]
-pub async fn save_proxy(
-    st: State<'_, SharedState>,
-    proxy_url: String,
-) -> Result<(), String> {
+pub async fn save_proxy(st: State<'_, SharedState>, proxy_url: String) -> Result<(), String> {
     api::save_proxy(&st, proxy_url).await
 }
 
@@ -34,8 +31,12 @@ pub async fn save_settings(
     st: State<'_, SharedState>,
     concurrency: Option<u32>,
     lang: Option<String>,
+    downloads_dir: Option<String>,
+    media_kinds: Option<Vec<String>>,
+    classify_by_type: Option<bool>,
 ) -> Result<(), String> {
-    api::save_settings(&st, concurrency, lang).await
+    api::save_settings(&st, concurrency, lang, downloads_dir, media_kinds, classify_by_type)
+        .await
 }
 
 #[tauri::command]
@@ -83,16 +84,12 @@ pub async fn get_queue(st: State<'_, SharedState>) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
-pub async fn queue_move(
-    st: State<'_, SharedState>,
-    id: u64,
-    to_front: bool,
-) -> Result<(), String> {
+pub async fn queue_move(st: State<'_, SharedState>, id: u64, to_front: bool) -> Result<(), String> {
     api::queue_move(&st, id, to_front).await
 }
 
 #[tauri::command]
-pub async fn clear_thumbs(st: State<'_, SharedState>) -> Result<u64, String> {
+pub async fn clear_thumbs(st: State<'_, SharedState>) -> Result<api::ClearedThumbs, String> {
     api::clear_thumbs(&st).await
 }
 
@@ -146,8 +143,10 @@ pub async fn history_page(
     link: String,
     offset_id: i32,
     date: Option<String>,
+    day_start: Option<i64>,
+    day_end: Option<i64>,
 ) -> Result<HistoryPage, String> {
-    api::history_page(&st, link, offset_id, date).await
+    api::history_page(&st, link, offset_id, date, day_start, day_end).await
 }
 
 #[tauri::command]
@@ -165,10 +164,7 @@ pub async fn history_recent(st: State<'_, SharedState>) -> Result<Vec<WatchEntry
 }
 
 #[tauri::command]
-pub async fn history_recent_remove(
-    st: State<'_, SharedState>,
-    raw_id: i64,
-) -> Result<(), String> {
+pub async fn history_recent_remove(st: State<'_, SharedState>, raw_id: i64) -> Result<(), String> {
     api::history_recent_remove(&st, raw_id).await
 }
 
@@ -188,8 +184,11 @@ pub async fn reveal_file(
     {
         return Err("INVALID_NAME".into());
     }
-    let base = st.downloads_dir.canonicalize().unwrap_or(st.downloads_dir.clone());
-    let full = st.downloads_dir.join(rel_path);
+    let base = st
+        .default_downloads_dir
+        .canonicalize()
+        .unwrap_or(st.default_downloads_dir.clone());
+    let full = st.default_downloads_dir.join(rel_path);
     let canon = full.canonicalize().map_err(|_| "NOT_FOUND".to_string())?;
     if !canon.starts_with(&base) {
         return Err("INVALID_NAME".into());

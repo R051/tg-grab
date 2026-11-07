@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { errorText } from "../lib/errors";
 import { invoke } from "../lib/backend";
 import { NButton, NInput, NProgress, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
@@ -14,33 +15,14 @@ const input = ref("");
 const submitting = ref(false);
 const filter = ref<"all" | "active" | "done" | "failed">("all");
 
-const FILTERS = [
-  { key: "all", label: "全部" },
-  { key: "active", label: "进行中" },
-  { key: "done", label: "已完成" },
-  { key: "failed", label: "失败" },
-] as const;
-
-const ERR_KEYS = [
-  "INVALID_LINK",
-  "INVITE_LINK",
-  "NOT_LOGGED_IN",
-  "MESSAGE_NOT_FOUND",
-  "NOT_A_VIDEO",
-  "RATE_LIMITED",
-  "CHANNEL_UNAVAILABLE",
-  "API_NOT_CONFIGURED",
-  "CANCELLED",
-] as const;
-
-function errText(e: unknown): string {
-  const raw = String(e);
-  const code = raw.includes(":") ? raw.split(":")[0].trim() : raw.trim();
-  for (const k of ERR_KEYS) {
-    if (code.startsWith(k)) return t(`download.errors.${k}`);
-  }
-  return raw;
-}
+const FILTERS = computed(() => [
+  { key: "all", label: t("download.filters.all") },
+  { key: "active", label: t("download.filters.active") },
+  { key: "done", label: t("download.filters.done") },
+  { key: "failed", label: t("download.filters.failed") },
+] as const);
+function errText(error: unknown): string { return errorText(error, t); }
+const busy = ref<Set<number>>(new Set());
 
 interface Row {
   kind: "active" | "queued" | "success" | "cached" | "failed";
@@ -58,14 +40,14 @@ const taskRowsRaw = computed<Row[]>(() => {
   const rows: Row[] = [];
   const seen = new Set<number>();
 
+  for (const active of store.activeTasks) {
+    seen.add(active.id);
+    rows.push({ kind: "active", id: active.id, url: active.url, name: active.name });
+  }
   for (const p of store.pending) {
     if (seen.has(p.id)) continue;
     seen.add(p.id);
     rows.push({ kind: "queued", id: p.id, url: p.url });
-  }
-  if (store.active) {
-    seen.add(store.active.id);
-    rows.push({ kind: "active", id: store.active.id, url: store.active.url });
   }
   for (const r of [...store.results].reverse()) {
     if (seen.has(r.id)) continue;
@@ -94,13 +76,13 @@ const taskRows = computed<Row[]>(() => {
 });
 
 const stats = computed(() => [
-  { num: store.active ? 1 : 0, label: t("download.status.downloading") },
+  { num: store.activeTasks.length, label: t("download.status.downloading") },
   { num: store.pending.length, label: t("download.status.queued") },
   { num: store.results.filter((r) => r.status === "success").length, label: t("download.status.success") },
   { num: store.files.length, label: t("download.filesTitle") },
 ]);
 
-const totalSpeed = computed(() => store.speed);
+const queueIndices = computed(() => new Map(store.pending.map((task, index) => [task.id, index])));
 
 function fmtSize(bytes: number | undefined | null): string {
   const b = bytes ?? 0;
@@ -110,8 +92,8 @@ function fmtSize(bytes: number | undefined | null): string {
   return `${(b / 1073741824).toFixed(2)} GB`;
 }
 
-function fmtEta(row: { total?: number; current?: number }): string {
-  const sp = totalSpeed.value;
+function fmtEta(row: { id: number; total?: number; current?: number }): string {
+  const sp = store.speeds[row.id] ?? 0;
   if (sp <= 0 || !row.total) return "—";
   const remain = row.total - (row.current ?? 0);
   if (remain <= 0) return "—";
@@ -119,9 +101,9 @@ function fmtEta(row: { total?: number; current?: number }): string {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s2 = sec % 60;
-  if (h > 0) return `${h}小时${m}分`;
-  if (m > 0) return `${m}分${String(s2).padStart(2, "0")}秒`;
-  return `${s2}秒`;
+  if (h > 0) return t("download.etaHours", { h, m });
+  if (m > 0) return t("download.etaMinutes", { m, s: String(s2).padStart(2, "0") });
+  return t("download.etaSeconds", { s: s2 });
 }
 
 function statusMeta(row: Row): { pill: string; label: string; icon: string } {
@@ -146,7 +128,7 @@ function rowTitle(row: Row): string {
 }
 
 function rowIndexQueue(id: number): number {
-  return store.pending.findIndex((p) => p.id === id);
+  return queueIndices.value.get(id) ?? -1;
 }
 
 async function openFile(name: string) {
@@ -157,9 +139,7 @@ async function openFile(name: string) {
   }
   try {
     await invoke("reveal_file", { name });
-  } catch {
-    /* no-op */
-  }
+  } catch (error) { message.error(errText(error)); }
 }
 
 async function removeFile(name: string) {
@@ -173,44 +153,49 @@ async function removeFile(name: string) {
 }
 
 async function retryTask(row: Row) {
+  if (busy.value.has(row.id)) return;
+  busy.value.add(row.id);
   try {
     await invoke<number[]>("download_urls", { urls: [row.url] });
     message.success(t("download.queued", { n: 1 }));
     await store.refreshQueue();
   } catch (e) {
     message.error(errText(e));
-  }
+  } finally { busy.value.delete(row.id); }
 }
 
 async function cancelTask(row: Row) {
+  if (busy.value.has(row.id)) return;
+  busy.value.add(row.id);
   try {
     await invoke("queue_cancel", { id: row.id });
     await store.refreshQueue();
   } catch (e) {
     message.error(errText(e));
-  }
+  } finally { busy.value.delete(row.id); }
 }
 
 async function moveTask(row: Row, toFront: boolean) {
+  if (busy.value.has(row.id)) return;
+  busy.value.add(row.id);
   try {
     await invoke("queue_move", { id: row.id, toFront });
     await store.refreshQueue();
   } catch (e) {
     message.error(String(e));
-  }
+  } finally { busy.value.delete(row.id); }
 }
 
 async function startDownload() {
-  const urls = input.value
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  if (submitting.value) return;
+  const submittedInput = input.value;
+  const urls = [...new Set(input.value.split("\n").map((s) => s.trim()).filter(Boolean))];
   if (!urls.length) return;
   submitting.value = true;
   try {
     const ids = await invoke<number[]>("download_urls", { urls });
     message.success(t("download.queued", { n: ids.length }));
-    input.value = "";
+    if (input.value === submittedInput) input.value = "";
     await store.refreshQueue();
   } catch (e) {
     message.error(errText(e));
@@ -237,7 +222,7 @@ import { fileUrl, isDesktop } from "../lib/backend";
       class="hero-input"
     />
     <div class="hero-actions">
-      <n-button type="primary" size="large" :loading="submitting" @click="startDownload">
+      <n-button type="primary" size="large" :loading="submitting" :disabled="!store.authorized || !input.trim()" @click="startDownload">
         <template #icon>
           <AppIcon name="download" :size="16" />
         </template>
@@ -256,20 +241,20 @@ import { fileUrl, isDesktop } from "../lib/backend";
   </div>
 
   <!-- Monitor: active download -->
-  <div v-if="store.active" class="panel monitor">
+  <div v-for="active in store.activeTasks" :key="active.id" class="panel monitor">
     <div class="monitor-head">
       <span class="row-icon">🔄</span>
-      <div class="m-name" :title="store.active.name || store.active.url">
-        {{ store.active.name || store.active.url }}
+      <div class="m-name" :title="active.name || active.url">
+        {{ active.name || active.url }}
       </div>
-      <span class="pill downloading">{{ (store.active.percent ?? 0).toFixed(1) }}%</span>
-      <button class="ghost-btn danger" @click="cancelTask({ id: store.active.id, url: store.active.url, kind: 'active' })">
+      <span class="pill downloading">{{ (active.percent ?? 0).toFixed(1) }}%</span>
+      <button class="ghost-btn danger" @click="cancelTask({ id: active.id, url: active.url, kind: 'active' })">
         ✕ {{ t("download.cancel") }}
       </button>
     </div>
     <n-progress
       type="line"
-      :percentage="Number((store.active.percent ?? 0).toFixed(1))"
+      :percentage="Number((active.percent ?? 0).toFixed(1))"
       :height="10"
       border-radius="5"
       :show-indicator="false"
@@ -277,19 +262,19 @@ import { fileUrl, isDesktop } from "../lib/backend";
     />
     <div class="monitor-grid">
       <div class="m-stat">
-        <div class="m-val">{{ fmtSize(totalSpeed) }}/s</div>
+        <div class="m-val">{{ fmtSize(store.speeds[active.id] ?? 0) }}/s</div>
         <div class="m-label">{{ t("download.speed") }}</div>
       </div>
       <div class="m-stat">
-        <div class="m-val">{{ fmtSize(store.active.current) }}</div>
+        <div class="m-val">{{ fmtSize(active.current) }}</div>
         <div class="m-label">{{ t("download.doneBytes") }}</div>
       </div>
       <div class="m-stat">
-        <div class="m-val">{{ fmtSize(store.active.total) }}</div>
+        <div class="m-val">{{ fmtSize(active.total) }}</div>
         <div class="m-label">{{ t("download.totalBytes") }}</div>
       </div>
       <div class="m-stat">
-        <div class="m-val">{{ fmtEta(store.active) }}</div>
+        <div class="m-val">{{ fmtEta(active) }}</div>
         <div class="m-label">{{ t("download.eta") }}</div>
       </div>
     </div>
@@ -332,7 +317,7 @@ import { fileUrl, isDesktop } from "../lib/backend";
             v-if="rowIndexQueue(row.id) > 0"
             class="ghost-btn row-action"
             :title="t('download.toTop')"
-            @click="moveTask(row, true)"
+            :disabled="busy.has(row.id)" @click="moveTask(row, true)"
           >
             ⤒
           </button>
@@ -340,11 +325,11 @@ import { fileUrl, isDesktop } from "../lib/backend";
             v-if="rowIndexQueue(row.id) > 1"
             class="ghost-btn row-action"
             :title="t('download.moveUp')"
-            @click="moveTask(row, false)"
+            :disabled="busy.has(row.id)" @click="moveTask(row, false)"
           >
             ↑
           </button>
-          <button class="ghost-btn row-action danger" @click="cancelTask(row)">✕</button>
+          <button class="ghost-btn row-action danger" :disabled="busy.has(row.id)" :title="t('download.cancel')" @click="cancelTask(row)">✕</button>
         </template>
         <button
           v-if="(row.kind === 'success' || row.kind === 'cached') && (row.path || row.name)"
@@ -356,7 +341,7 @@ import { fileUrl, isDesktop } from "../lib/backend";
         <button
           v-else-if="row.kind === 'failed'"
           class="ghost-btn row-action"
-          @click="retryTask(row)"
+          :disabled="busy.has(row.id)" :title="t('download.retry')" @click="retryTask(row)"
         >
           ⟳
         </button>

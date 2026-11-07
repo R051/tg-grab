@@ -32,8 +32,7 @@ npm run tauri build   # 发布安装包（NSIS/MSI）
 
 ```bash
 # 本地运行（需先构建前端：npm run build）
-cd src-tauri
-cargo run --release --no-default-features --features server
+cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
 # → 启动时打印访问令牌，界面在 http://0.0.0.0:8080
 
 # 或者用 Docker

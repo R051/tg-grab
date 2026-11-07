@@ -2,14 +2,14 @@
 
 use crate::state::{ActiveTask, Job, SharedState};
 use crate::tg::links::{make_msg_link, parse_msg_link, sanitize_filename};
-use crate::tg::{client as tg_client, video_meta};
+use crate::tg::{client as tg_client, media_meta, MediaKind};
 use grammers_client::media::Downloadable;
 use grammers_client::{Client, InvocationError, tl};
 use grammers_session::Session;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -98,8 +98,7 @@ async fn copy_auth_to_dc(
         .invoke(&tl::functions::auth::ExportAuthorization { dc_id: target_dc })
         .await
         .map_err(|e| e.to_string())?;
-    let tl::enums::auth::ExportedAuthorization::Authorization(a) = exported
-    else {
+    let tl::enums::auth::ExportedAuthorization::Authorization(a) = exported else {
         return Err("unexpected auth.exportedAuthorization".into());
     };
     client
@@ -119,20 +118,22 @@ async fn copy_auth_to_dc(
 /// Spawn download workers (1 = sequential across files; each file itself
 /// downloads with 4 parallel chunk connections). Capped at 4.
 pub async fn spawn_workers(st: SharedState) {
-    let n = {
-        let cfg = st.config.read().await;
-        cfg.concurrency.clamp(1, 4)
-    };
-    for _ in 0..n {
+    for worker in 0..4 {
         let st = st.clone();
         tokio::spawn(async move {
-            worker_loop(st).await;
+            worker_loop(st, worker).await;
         });
     }
 }
 
-async fn worker_loop(st: SharedState) {
+async fn worker_loop(st: SharedState, worker: usize) {
     loop {
+        if worker >= st.config.read().await.concurrency.clamp(1, 4)
+            || st.queue.pending.lock().await.is_empty()
+        {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
         // Restored tasks at startup race the login: wait for an authorized
         // client (up to 2 min) before failing anything with NOT_LOGGED_IN.
         let client: Option<Client> = loop {
@@ -148,7 +149,9 @@ async fn worker_loop(st: SharedState) {
                 .unwrap_or(0);
             let deadline = st.queue.no_auth_until.load(Ordering::Relaxed);
             if deadline == 0 {
-                st.queue.no_auth_until.store(now + 120_000, Ordering::Relaxed);
+                st.queue
+                    .no_auth_until
+                    .store(now + 120_000, Ordering::Relaxed);
             } else if now >= deadline {
                 log::warn!("queue: still not logged in, failing pending jobs");
                 break None;
@@ -181,10 +184,12 @@ async fn worker_loop(st: SharedState) {
         let job = {
             let mut pending = st.queue.pending.lock().await;
             let j = pending.pop_front();
-            drop(pending);
             // Journal: the taken job moves to in_flight so a crash mid-
             // download still knows about it.
-            *st.queue.in_flight.lock().await = j.clone();
+            if let Some(job) = &j {
+                st.queue.in_flight.lock().await.insert(job.id, job.clone());
+            }
+            drop(pending);
             st.queue.persist(&st.queue_path).await;
             st.bus.emit("queue:changed", serde_json::Value::Bool(true));
             j
@@ -204,8 +209,9 @@ async fn worker_loop(st: SharedState) {
                 results.drain(0..len - 200);
             }
         }
-        *st.queue.active.lock().await = None;
-        *st.queue.in_flight.lock().await = None;
+        st.queue.active.lock().await.remove(&job.id);
+        st.queue.in_flight.lock().await.remove(&job.id);
+        st.queue.cancel_flags.lock().unwrap().remove(&job.id);
         st.queue.persist(&st.queue_path).await;
         st.bus.emit(
             "queue:result",
@@ -239,15 +245,24 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
 
     let media = match msg.media() {
         Some(m) => m,
-        None => return fail_str("NOT_A_VIDEO"),
+        None => return fail_str("UNSUPPORTED_MEDIA"),
     };
-    let meta = match video_meta(&media) {
+    let meta = match media_meta(&media) {
         Some(m) => m,
-        None => return fail_str("NOT_A_VIDEO"),
+        None => return fail_str("UNSUPPORTED_MEDIA"),
     };
+    // Respect the configured media kinds.
+    {
+        let cfg = st.config.read().await.clone();
+        let kind_str = meta.kind.as_str().to_string();
+        if !cfg.media_kinds.iter().any(|k| k == &kind_str) {
+            return fail_str("UNSUPPORTED_MEDIA");
+        }
+    }
 
-    // Optional per-channel/date subdirectories.
+    // Optional per-channel/date/type subdirectories + effective root.
     let cfg_dl = st.config.read().await.clone();
+    let root = st.downloads_root().await;
     let base_dir = if cfg_dl.organize_by_channel {
         let day = msg
             .date()
@@ -255,13 +270,19 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             .format("%Y-%m-%d")
             .to_string();
         let chan = sanitize_filename(
-            &rc.identity.title.clone().unwrap_or_else(|| "未知频道".into()),
+            &rc.identity
+                .title
+                .clone()
+                .unwrap_or_else(|| "未知频道".into()),
         );
-        let dir = st.downloads_dir.join(chan).join(day);
+        let mut dir = root.join(chan).join(day);
+        if cfg_dl.classify_by_type {
+            dir = dir.join(meta.kind.folder());
+        }
         std::fs::create_dir_all(&dir).ok();
         dir
     } else {
-        st.downloads_dir.clone()
+        root.clone()
     };
     drop(cfg_dl);
 
@@ -269,7 +290,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         &meta
             .name
             .clone()
-            .unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
+            .unwrap_or_else(|| crate::tg::default_name(&meta.kind, msg_id)),
     );
     let mut target = base_dir.join(&file_name);
     let total = meta.size;
@@ -282,10 +303,10 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         let local = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         if total > 0 && local == total {
             let rel = target
-                .strip_prefix(&st.downloads_dir)
+                .strip_prefix(&base_dir)
                 .unwrap_or(target.as_path())
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             return TaskResult {
                 id: job.id,
                 url: job.url.clone(),
@@ -330,8 +351,17 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             if let Ok(j) = serde_json::from_slice::<PartJournal>(&bytes) {
                 if j.total == total && j.chunk == CHUNK {
                     let set: std::collections::HashSet<u64> = j.done.into_iter().collect();
-                    let bytes_already = (set.len() as u64) * (CHUNK as u64);
-                    if bytes_already < total {
+                    let chunks = total.div_ceil(CHUNK as u64);
+                    let bytes_already: u64 = set
+                        .iter()
+                        .filter(|&&i| i < chunks)
+                        .map(|&i| (total - i * CHUNK as u64).min(CHUNK as u64))
+                        .sum();
+                    if set.iter().all(|&i| i < chunks)
+                        && std::fs::metadata(&part_path)
+                            .map(|m| m.len() == total)
+                            .unwrap_or(false)
+                    {
                         usable = true;
                         resume_done = Some(set);
                         resumed_bytes = bytes_already;
@@ -354,7 +384,11 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         total,
         percent: 0.0,
     };
-    *st.queue.active.lock().await = Some(progress.clone());
+    st.queue
+        .active
+        .lock()
+        .await
+        .insert(job.id, progress.clone());
     st.bus.emit(
         "queue:progress",
         serde_json::to_value(&progress).unwrap_or(serde_json::Value::Null),
@@ -368,7 +402,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
     let emit_done = done.clone();
     let emit_flag = emitting.clone();
     let mut emit_progress = progress;
-    tokio::spawn(async move {
+    let emitter = tokio::spawn(async move {
         while emit_flag.load(Ordering::Relaxed) {
             let current = emit_done.load(Ordering::Relaxed);
             emit_progress.current = current;
@@ -377,7 +411,12 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             } else {
                 0.0
             };
-            *emit_st.queue.active.lock().await = Some(emit_progress.clone());
+            emit_st
+                .queue
+                .active
+                .lock()
+                .await
+                .insert(emit_progress.id, emit_progress.clone());
             emit_st.bus.emit(
                 "queue:progress",
                 serde_json::to_value(&emit_progress).unwrap_or(serde_json::Value::Null),
@@ -386,14 +425,27 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         }
     });
 
-    let result = match download_parallel(st, &client, &media, &part_path, total, done, resume_done, &journal_path, job.id).await {
+    let result = match download_parallel(
+        st,
+        &client,
+        &media,
+        &part_path,
+        total,
+        done,
+        resume_done,
+        &journal_path,
+        job.id,
+    )
+    .await
+    {
         Ok(()) => match tokio::fs::rename(&part_path, &target).await {
             Ok(()) => {
                 let rel = target
-                    .strip_prefix(&st.downloads_dir)
+                    .strip_prefix(&st.default_downloads_dir)
                     .unwrap_or(target.as_path())
                     .to_string_lossy()
-                    .to_string();
+                    .replace('\\', "/");
+                let _ = tokio::fs::remove_file(&journal_path).await;
                 TaskResult {
                     id: job.id,
                     url: job.url.clone(),
@@ -410,8 +462,11 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         Err(e) => {
             // Keep .part + journal (unless the error is unrecoverable) so the
             // next attempt resumes from completed chunks.
-            if !e.starts_with("RATE_LIMITED") && !e.starts_with("SIZE_MISMATCH")
-                && !e.starts_with("NOT_LOGGED_IN") && !e.starts_with("IO:") {
+            if !e.starts_with("RATE_LIMITED")
+                && !e.starts_with("SIZE_MISMATCH")
+                && !e.starts_with("NOT_LOGGED_IN")
+                && !e.starts_with("IO:")
+            {
                 // recoverable: keep
             } else if e.starts_with("IO:") {
                 let _ = std::fs::remove_file(&part_path);
@@ -421,6 +476,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         }
     };
     emitting.store(false, Ordering::Relaxed);
+    let _ = emitter.await;
     result
 }
 
@@ -478,7 +534,7 @@ async fn download_parallel(
             .await
             .map_err(|e| format!("IO: {e}"))?
     } else {
-        let mut f = tokio::fs::File::create(target)
+        let f = tokio::fs::File::create(target)
             .await
             .map_err(|e| format!("IO: {e}"))?;
         f.set_len(total).await.map_err(|e| format!("IO: {e}"))?;
@@ -489,12 +545,11 @@ async fn download_parallel(
     let total_chunks = total.div_ceil(CHUNK as u64);
     let skip = resume_done.unwrap_or_default();
     let resumed_chunks = skip.len() as u64;
-    let mut remaining: std::collections::VecDeque<u64> = (0..total_chunks)
-        .filter(|i| !skip.contains(i))
-        .collect();
+    let remaining: std::collections::VecDeque<u64> =
+        (0..total_chunks).filter(|i| !skip.contains(i)).collect();
     let remaining = Arc::new(tokio::sync::Mutex::new(remaining));
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>, u64)>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(u64, Vec<u8>, u64)>(8);
 
     let mut tasks = Vec::new();
     let st_for_workers = st.clone();
@@ -534,8 +589,12 @@ async fn download_parallel(
                 match client.invoke_in_dc(dc, &request).await {
                     Ok(tl::enums::upload::File::File(f)) => {
                         let n = f.bytes.len() as u64;
+                        let expected = (total - offset as u64).min(CHUNK as u64);
+                        if n != expected {
+                            return Err(format!("SIZE_MISMATCH: chunk {index}: {n} != {expected}"));
+                        }
                         done.fetch_add(n, Ordering::Relaxed);
-                        if tx.send((offset as u64, f.bytes, index)).is_err() {
+                        if tx.send((offset as u64, f.bytes, index)).await.is_err() {
                             break; // writer gone (abort/shutdown)
                         }
                         if n == 0 {
@@ -569,9 +628,10 @@ async fn download_parallel(
     log::info!("[writer] starting, resume chunks: {}", written.len());
     while let Some((offset, data, index)) = rx.recv().await {
         if offset != pos {
-            file.seek(std::io::SeekFrom::Start(offset))
-                .await
-                .map_err(|e| format!("IO: {e}"))?;
+            if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
+                write_err = Some(format!("IO: {e}"));
+                break;
+            }
         }
         if let Err(e) = file.write_all(&data).await {
             write_err = Some(format!("IO: {e}"));
@@ -582,16 +642,23 @@ async fn download_parallel(
         since_journal += 1;
         if since_journal >= 8 {
             since_journal = 0;
-            let before = std::fs::metadata(journal_path).map(|m| m.len()).unwrap_or(0);
+            let before = std::fs::metadata(journal_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
             write_journal(journal_path, total, &written);
-            let after = std::fs::metadata(journal_path).map(|m| m.len()).unwrap_or(0);
+            let after = std::fs::metadata(journal_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
             if after == before && after == 0 {
                 log::warn!("[writer] journal write produced no file!");
             }
             log::info!("[writer] {} chunks done, {} bytes", written.len(), pos);
         }
     }
-    let _ = file.sync_all().await;
+    drop(rx);
+    if let Err(e) = file.sync_all().await {
+        write_err = Some(format!("IO: {e}"));
+    }
     drop(file);
     write_journal(journal_path, total, &written);
 
@@ -610,7 +677,7 @@ async fn download_parallel(
 
     // Verify against the advertised size.
     let local = std::fs::metadata(target).map(|m| m.len()).unwrap_or(0);
-    if total > 0 && local != total {
+    if written.len() as u64 != total_chunks || (total > 0 && local != total) {
         return Err(format!("SIZE_MISMATCH: {local} != {total}"));
     }
     let _ = resumed_chunks;
@@ -624,15 +691,30 @@ pub fn link_for_entry(entry: &crate::config::WatchEntry, msg_id: i32) -> String 
 
 /// Initial snapshot for the frontend (after a reload or on start).
 pub async fn snapshot(st: &SharedState) -> serde_json::Value {
-    let pending: Vec<Job> = st.queue.pending.lock().await.iter().cloned().collect();
+    let pending = st.queue.pending.lock().await;
+    let inflight = st.queue.in_flight.lock().await;
     let results: Vec<TaskResult> = st.queue.results.lock().await.clone();
-    let active = st.queue.active.lock().await.clone();
+    let active = st.queue.active.lock().await;
+    let active_tasks: Vec<ActiveTask> = inflight
+        .values()
+        .map(|job| {
+            active.get(&job.id).cloned().unwrap_or_else(|| ActiveTask {
+                id: job.id,
+                url: job.url.clone(),
+                name: String::new(),
+                current: 0,
+                total: 0,
+                percent: 0.0,
+            })
+        })
+        .collect();
     serde_json::json!({
         "pending": pending
             .iter()
             .map(|j| serde_json::json!({"id": j.id, "url": j.url}))
             .collect::<Vec<_>>(),
-        "active": active,
+        "active": active_tasks.first(),
+        "activeTasks": active_tasks,
         "results": results,
     })
 }

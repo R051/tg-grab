@@ -6,15 +6,14 @@
 //! on first run and printed to the console).
 
 use axum::{
+    Json, Router,
     body::Body,
     extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade, ws::Message},
-    http::{HeaderMap, StatusCode, Uri, header},
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
-use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -62,92 +61,143 @@ fn i64_arg(v: &Value, k: &str) -> i64 {
 async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, String> {
     Ok(match cmd.as_str() {
         "get_status" => to_json(tg_grab_lib::api::get_status(&st).await?)?,
-        "save_api_config" => json!({
-            "ok": tg_grab_lib::api::save_api_config(&st, s_arg(&body, "apiId"), s_arg(&body, "apiHash")).await.is_ok()
-        }),
+        "save_api_config" => {
+            tg_grab_lib::api::save_api_config(&st, s_arg(&body, "apiId"), s_arg(&body, "apiHash"))
+                .await?;
+            Value::Null
+        }
         "save_proxy" => {
             tg_grab_lib::api::save_proxy(&st, s_arg(&body, "proxyUrl")).await?;
-            json!({"ok": true})
+            Value::Null
         }
         "save_settings" => {
             tg_grab_lib::api::save_settings(
                 &st,
-                body.get("concurrency").and_then(|x| x.as_u64()).map(|x| x as u32),
+                body.get("concurrency")
+                    .and_then(|x| x.as_u64())
+                    .map(|x| x as u32),
                 body.get("lang").and_then(|x| x.as_str()).map(String::from),
+                body.get("downloadsDir")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
+                body.get("mediaKinds")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|k| k.as_str())
+                            .map(String::from)
+                            .collect()
+                    }),
+                body.get("classifyByType").and_then(|x| x.as_bool()),
             )
             .await?;
-            json!({"ok": true})
+            Value::Null
         }
         "get_settings" => to_json(tg_grab_lib::api::get_settings(&st).await?)?,
         "auth_send_code" => {
             tg_grab_lib::api::auth_send_code(&st, s_arg(&body, "phone")).await?;
-            json!({"ok": true})
+            Value::Null
         }
-        "auth_sign_in" => to_json(tg_grab_lib::api::auth_sign_in(&st, s_arg(&body, "code")).await?)?,
+        "auth_sign_in" => {
+            to_json(tg_grab_lib::api::auth_sign_in(&st, s_arg(&body, "code")).await?)?
+        }
         "auth_check_password" => {
-            json!({"user": tg_grab_lib::api::auth_check_password(&st, s_arg(&body, "password")).await?})
+            to_json(tg_grab_lib::api::auth_check_password(&st, s_arg(&body, "password")).await?)?
         }
         "logout" => {
             tg_grab_lib::api::logout(&st).await?;
-            json!({"ok": true})
+            Value::Null
         }
-        "download_urls" => to_json(tg_grab_lib::api::download_urls(
-            &st,
-            body.get("urls")
-                .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|u| u.as_str()).map(String::from).collect())
-                .unwrap_or_default(),
-        ).await?)?,
+        "download_urls" => to_json(
+            tg_grab_lib::api::download_urls(
+                &st,
+                body.get("urls")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|u| u.as_str())
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )
+            .await?,
+        )?,
         "get_queue" => tg_grab_lib::api::get_queue(&st).await?,
         "queue_move" => {
-            tg_grab_lib::api::queue_move(&st, i64_arg(&body, "id") as u64, body.get("toFront").and_then(|x| x.as_bool()).unwrap_or(false)).await?;
-            json!({"ok": true})
+            tg_grab_lib::api::queue_move(
+                &st,
+                i64_arg(&body, "id") as u64,
+                body.get("toFront")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false),
+            )
+            .await?;
+            Value::Null
         }
         "queue_cancel" => {
             tg_grab_lib::api::queue_cancel(&st, i64_arg(&body, "id") as u64).await?;
-            json!({"ok": true})
+            Value::Null
         }
-        "clear_thumbs" => json!({"freed": tg_grab_lib::api::clear_thumbs(&st).await?}),
+        "clear_thumbs" => to_json(tg_grab_lib::api::clear_thumbs(&st).await?)?,
         "list_files" => to_json(tg_grab_lib::api::list_files(&st).await?)?,
         "delete_file" => {
             tg_grab_lib::api::delete_file(&st, s_arg(&body, "name")).await?;
-            json!({"ok": true})
+            Value::Null
         }
         "watch_list" => to_json(tg_grab_lib::api::watch_list(&st).await?)?,
-        "watch_add" => to_json(tg_grab_lib::api::watch_add(
-            &st,
-            s_arg(&body, "link"),
-            body.get("backfill").and_then(|x| x.as_bool()).unwrap_or(false),
-        ).await?)?,
+        "watch_add" => to_json(
+            tg_grab_lib::api::watch_add(
+                &st,
+                s_arg(&body, "link"),
+                body.get("backfill")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false),
+            )
+            .await?,
+        )?,
         "watch_toggle" => {
-            json!({"enabled": tg_grab_lib::api::watch_toggle(&st, i64_arg(&body, "rawId")).await?})
+            to_json(tg_grab_lib::api::watch_toggle(&st, i64_arg(&body, "rawId")).await?)?
         }
         "watch_delete" => {
             tg_grab_lib::api::watch_delete(&st, i64_arg(&body, "rawId")).await?;
-            json!({"ok": true})
+            Value::Null
         }
         "watch_catchup" => {
             tg_grab_lib::api::watch_catchup(&st).await?;
-            json!({"ok": true})
+            Value::Null
         }
-        "history_page" => to_json(tg_grab_lib::api::history_page(
-            &st,
-            s_arg(&body, "link"),
-            i32_arg(&body, "offsetId"),
-            body.get("date").and_then(|x| x.as_str()).map(String::from),
-        ).await?)?,
-        "history_thumbs" => to_json(tg_grab_lib::api::history_thumbs(
-            &st,
-            s_arg(&body, "link"),
-            body.get("msgIds")
-                .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(|n| n.as_i64()).map(|n| n as i32).collect())
-                .unwrap_or_default(),
-        ).await?)?,
+        "history_page" => to_json(
+            tg_grab_lib::api::history_page(
+                &st,
+                s_arg(&body, "link"),
+                i32_arg(&body, "offsetId"),
+                body.get("date").and_then(|x| x.as_str()).map(String::from),
+                body.get("dayStart").and_then(|x| x.as_i64()),
+                body.get("dayEnd").and_then(|x| x.as_i64()),
+            )
+            .await?,
+        )?,
+        "history_thumbs" => to_json(
+            tg_grab_lib::api::history_thumbs(
+                &st,
+                s_arg(&body, "link"),
+                body.get("msgIds")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|n| n.as_i64())
+                            .map(|n| n as i32)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )
+            .await?,
+        )?,
         "history_recent" => to_json(tg_grab_lib::api::history_recent(&st).await?)?,
         "history_recent_remove" => {
             tg_grab_lib::api::history_recent_remove(&st, i64_arg(&body, "rawId")).await?;
-            json!({"ok": true})
+            Value::Null
         }
         _ => return Err("UNKNOWN_COMMAND".into()),
     })
@@ -184,10 +234,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| async move { forward_events(st, socket).await })
 }
 
-async fn forward_events(
-    st: SharedState,
-    mut socket: axum::extract::ws::WebSocket,
-) {
+async fn forward_events(st: SharedState, mut socket: axum::extract::ws::WebSocket) {
     let mut rx = st.bus.subscribe();
     loop {
         match rx.recv().await {
@@ -211,90 +258,17 @@ async fn forward_events(
 async fn file_handler(
     State(st): State<St>,
     Path(path): Path<String>,
-    headers: HeaderMap,
+    request: axum::extract::Request,
 ) -> Response {
-    // Reject traversal, then resolve under downloads_dir.
-    if path.split('\\').chain(path.split('/')).any(|seg| seg == "..") {
-        return (StatusCode::BAD_REQUEST, "BAD_PATH").into_response();
-    }
-    let full = st.downloads_dir.join(&path);
-    let meta = match tokio::fs::metadata(&full).await {
-        Ok(m) if m.is_file() => m,
-        _ => return (StatusCode::NOT_FOUND, "NOT_FOUND").into_response(),
+    let full = match tg_grab_lib::api::resolve_download_path(&st, &path).await {
+        Ok(path) => path,
+        Err(e) => return (StatusCode::NOT_FOUND, e).into_response(),
     };
-    let size = meta.len();
-    let mime = if path.to_lowercase().ends_with(".mp4") {
-        "video/mp4"
-    } else {
-        "application/octet-stream"
-    };
-
-    // Single-range support (suffix "bytes=-N" also handled).
-    let mut start: u64 = 0;
-    let mut end: u64 = size.saturating_sub(1);
-    let mut partial = false;
-    if let Some(range) = headers
-        .get(header::RANGE)
-        .and_then(|h| h.to_str().ok())
-    {
-        if let Some(spec) = range.strip_prefix("bytes=") {
-            let mut it = spec.splitn(2, '-');
-            let first = it.next().unwrap_or("");
-            let last = it.next().unwrap_or("");
-            if first.is_empty() {
-                // bytes=-N : final N bytes
-                if let Ok(n) = last.parse::<u64>() {
-                    let n = n.min(size);
-                    start = size - n;
-                    end = size.saturating_sub(1);
-                    partial = true;
-                }
-            } else if let Ok(s) = first.parse::<u64>() {
-                start = s.min(size);
-                end = if last.is_empty() {
-                    size.saturating_sub(1)
-                } else {
-                    last.parse::<u64>().unwrap_or(size - 1).min(size.saturating_sub(1))
-                };
-                if start > end {
-                    return (
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        [("content-range", format!("bytes */{size}"))],
-                    )
-                        .into_response();
-                }
-                partial = true;
-            }
-        }
+    // tower-http streams bounded chunks and implements GET/HEAD, 206 and 416.
+    match ServeFile::new(full).try_call(request).await {
+        Ok(response) => response.map(Body::new),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-    let len = end - start + 1;
-
-    let mut f = match tokio::fs::File::open(&full).await {
-        Ok(f) => f,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    if start > 0 {
-        use std::io::SeekFrom;
-        if f.seek(SeekFrom::Start(start)).await.is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "seek failed").into_response();
-        }
-    }
-    use tokio::io::AsyncReadExt as _;
-    let mut buf = vec![0u8; len as usize];
-    if let Err(e) = f.read_exact(&mut buf).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
-
-    let mut resp = (StatusCode::OK, [(header::CONTENT_TYPE, mime)], buf).into_response();
-    if partial {
-        resp.headers_mut().insert(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{end}/{size}")
-                .parse()
-                .unwrap(),
-        );
-    }
-    resp
 }
 
 /// Bearer/query token auth for /api, /ws and /files.
@@ -304,7 +278,13 @@ async fn auth_mw(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let expected = st.config.read().await.server_token.clone().unwrap_or_default();
+    let expected = st
+        .config
+        .read()
+        .await
+        .server_token
+        .clone()
+        .unwrap_or_default();
     let given = req
         .headers()
         .get("authorization")
@@ -312,17 +292,15 @@ async fn auth_mw(
         .and_then(|h| h.strip_prefix("Bearer "))
         .map(String::from)
         .or_else(|| {
-            req.uri()
-                .query()
-                .and_then(|q| {
-                    q.split('&').find_map(|kv| {
-                        let mut it = kv.splitn(2, '=');
-                        match (it.next(), it.next()) {
-                            (Some("token"), Some(v)) => Some(v.to_string()),
-                            _ => None,
-                        }
-                    })
+            req.uri().query().and_then(|q| {
+                q.split('&').find_map(|kv| {
+                    let mut it = kv.splitn(2, '=');
+                    match (it.next(), it.next()) {
+                        (Some("token"), Some(v)) => Some(v.to_string()),
+                        _ => None,
+                    }
                 })
+            })
         });
     if !expected.is_empty() && given.as_deref() == Some(expected.as_str()) {
         next.run(req).await
@@ -355,21 +333,21 @@ async fn main() {
         {
             let t = random_token();
             cfg.server_token = Some(t.clone());
-            let snapshot = cfg.clone();
-            let path = st.config_path.clone();
-            drop(cfg);
-            let _ = snapshot.save(&path);
+            if let Err(error) = cfg.save(&st.config_path) {
+                eprintln!("could not persist access token: {error}");
+            }
             Some(t)
         } else {
             cfg.server_token.clone()
         }
     };
     match &token {
-        Some(t) if st.config.read().await.server_token.as_deref() == Some(t.as_str()) && {
-            // only print when freshly generated is undetectable; printing on
-            // every boot is convenient for headless setups
-            true
-        } =>
+        Some(t)
+            if st.config.read().await.server_token.as_deref() == Some(t.as_str()) && {
+                // only print when freshly generated is undetectable; printing on
+                // every boot is convenient for headless setups
+                true
+            } =>
         {
             println!("────────────────────────────────────────────");
             println!("  tg-grab web server: http://0.0.0.0:{port}");
@@ -380,8 +358,7 @@ async fn main() {
     }
 
     let dist = std::path::PathBuf::from(&dist_dir);
-    let spa = ServeDir::new(&dist)
-        .fallback(ServeFile::new(dist.join("index.html")));
+    let spa = ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html")));
 
     let app = Router::new()
         .route("/api/invoke/{cmd}", post(invoke_handler))
@@ -407,3 +384,151 @@ async fn main() {
 // Silence unused warnings for types kept for parity with the desktop shell.
 #[allow(unused)]
 fn _unused(h: HeaderMap, _s: SharedState) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::Request;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Fixture {
+        root: PathBuf,
+        state: St,
+    }
+    impl Fixture {
+        async fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "tg-grab-test-{}-{}-{}",
+                std::process::id(),
+                now_ms(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let state = tg_grab_lib::init_core(root.clone()).await;
+            Self { root, state }
+        }
+        async fn get(&self, path: &str, method: &str, range: Option<&str>) -> Response {
+            let mut request = Request::builder().method(method).uri("/files/video.mp4");
+            if let Some(range) = range {
+                request = request.header("range", range);
+            }
+            file_handler(
+                State(self.state.clone()),
+                Path(path.into()),
+                request.body(Body::empty()).unwrap(),
+            )
+            .await
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn organized_files_stream_ranges_and_head() {
+        let fixture = Fixture::new().await;
+        let folder = fixture.state.downloads_dir.join("频道/2026-11-07");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("video.mp4"), b"0123456789").unwrap();
+        let path = "频道/2026-11-07/video.mp4";
+        let response = fixture.get(path, "GET", Some("bytes=2-5")).await;
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 2-5/10");
+        assert_eq!(response.headers()["accept-ranges"], "bytes");
+        assert_eq!(
+            &to_bytes(response.into_body(), 100).await.unwrap()[..],
+            b"2345"
+        );
+        let suffix = fixture.get(path, "GET", Some("bytes=-3")).await;
+        assert_eq!(suffix.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            &to_bytes(suffix.into_body(), 100).await.unwrap()[..],
+            b"789"
+        );
+        let head = fixture.get(path, "HEAD", None).await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers()["content-length"], "10");
+        assert!(to_bytes(head.into_body(), 100).await.unwrap().is_empty());
+        let invalid = fixture.get(path, "GET", Some("bytes=20-")).await;
+        assert_eq!(invalid.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(invalid.headers()["content-range"], "bytes */10");
+    }
+
+    #[tokio::test]
+    async fn empty_files_and_traversal_are_handled_without_panics() {
+        let fixture = Fixture::new().await;
+        std::fs::write(fixture.state.downloads_dir.join("empty.mp4"), []).unwrap();
+        let response = fixture.get("empty.mp4", "GET", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            to_bytes(response.into_body(), 100)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for path in [
+            "../config.json",
+            "..\\config.json",
+            "/etc/passwd",
+            "C:/Windows/win.ini",
+        ] {
+            assert_eq!(
+                fixture.get(path, "GET", None).await.status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn command_errors_and_thumbnail_results_match_the_shared_api() {
+        let fixture = Fixture::new().await;
+        let response = invoke_handler(
+            State(fixture.state.clone()),
+            Path("save_api_config".into()),
+            Some(Json(json!({"apiId":"invalid", "apiHash":"bad"}))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1000).await.unwrap()).unwrap();
+        assert_eq!(error["error"], "INVALID_API_ID");
+        let thumbs = fixture.state.downloads_dir.join("thumbs");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        std::fs::write(thumbs.join("thumbnail.jpg"), b"image").unwrap();
+        let result = invoke_dispatch(fixture.state.clone(), "clear_thumbs".into(), Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(result, json!({"freed":5}));
+        assert_eq!(
+            serde_json::to_value(
+                tg_grab_lib::api::clear_thumbs(&fixture.state)
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
+            json!({"freed":0})
+        );
+    }
+
+    #[tokio::test]
+    async fn file_listing_excludes_partial_files_and_normalizes_paths() {
+        let fixture = Fixture::new().await;
+        let root = &fixture.state.downloads_dir;
+        std::fs::create_dir_all(root.join("channel/day")).unwrap();
+        for name in [
+            "partial.mp4.part",
+            "partial.mp4.part.progress",
+            "partial.progress.tmp",
+            "channel/day/clip.mp4",
+        ] {
+            std::fs::write(root.join(name), b"data").unwrap();
+        }
+        let files = tg_grab_lib::api::list_files(&fixture.state).await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "channel/day/clip.mp4");
+    }
+}

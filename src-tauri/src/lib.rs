@@ -13,47 +13,61 @@ use std::sync::Arc;
 /// Shared bootstrap for both shells: paths, state, queue restore, workers.
 pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
     tokio::fs::create_dir_all(&data_dir).await.ok();
-    let downloads_dir = data_dir.join("downloads");
-    tokio::fs::create_dir_all(&downloads_dir).await.ok();
-
     let config_path = data_dir.join("config.json");
+    let config = config::Config::load(&config_path);
+    let downloads_dir = config
+        .downloads_dir
+        .clone()
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| data_dir.join("downloads"));
+    tokio::fs::create_dir_all(&downloads_dir).await.ok();
     let session_path = data_dir.join("tggrab.session");
     let queue_path = data_dir.join("queue.json");
 
     // Leftover .part files without a chunk journal are junk; paired
     // ones (.part + .part.progress) are kept for resume.
-    if let Ok(rd) = std::fs::read_dir(&downloads_dir) {
-        for entry in rd.flatten() {
-            let path = entry.path();
-            let ext = path
-                .extension()
-                .map(|e| e.to_string_lossy().to_string());
-            match ext.as_deref() {
-                Some("part") => {
-                    let journal = path.with_extension("part.progress");
-                    if !journal.exists() {
-                        let _ = std::fs::remove_file(&path);
-                    }
+    let mut directories = vec![downloads_dir.clone()];
+    while let Some(directory) = directories.pop() {
+        if let Ok(rd) = std::fs::read_dir(directory) {
+            for entry in rd.flatten() {
+                if entry
+                    .file_type()
+                    .map(|kind| kind.is_symlink())
+                    .unwrap_or(true)
+                {
+                    continue;
                 }
-                Some("progress") => {
-                    let part_file = path.with_extension("part");
-                    if !part_file.exists() {
-                        let _ = std::fs::remove_file(&path);
-                    }
+                let path = entry.path();
+                if path.is_dir() {
+                    directories.push(path);
+                    continue;
                 }
-                _ => {}
+                let ext = path.extension().map(|e| e.to_string_lossy().to_string());
+                match ext.as_deref() {
+                    Some("part") => {
+                        let journal = path.with_extension("part.progress");
+                        if !journal.exists() {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                    Some("progress") => {
+                        let part_file = path.with_extension("");
+                        if !part_file.exists() {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
-
-    let config = config::Config::load(&config_path);
 
     let st: SharedState = Arc::new(Inner {
         bus: events::EventBus::new(),
         queue_path: queue_path.clone(),
         config_path,
         session_path,
-        downloads_dir,
+        default_downloads_dir: downloads_dir,
         config: tokio::sync::RwLock::new(config),
         client: tokio::sync::RwLock::new(None),
         session: tokio::sync::RwLock::new(None),
@@ -61,6 +75,9 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         updates_rx: tokio::sync::Mutex::new(None),
         login_token: tokio::sync::Mutex::new(None),
         password_token: tokio::sync::Mutex::new(None),
+        auth_lock: tokio::sync::Mutex::new(()),
+        connect_lock: tokio::sync::Mutex::new(()),
+        catchup_lock: tokio::sync::Mutex::new(()),
         watcher_running: std::sync::atomic::AtomicBool::new(false),
         sweeper_running: std::sync::atomic::AtomicBool::new(false),
         queue: state::QueueState::new(queue_path),
@@ -210,5 +227,28 @@ pub mod desktop {
             })
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn startup_keeps_paired_resume_journals_in_organized_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "tg-grab-resume-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let directory = root.join("downloads/channel/day");
+        std::fs::create_dir_all(&directory).unwrap();
+        let part = directory.join("clip.mp4.part");
+        let journal = directory.join("clip.mp4.part.progress");
+        std::fs::write(&part, b"partial").unwrap();
+        std::fs::write(&journal, b"{}").unwrap();
+        let state = super::init_core(root.clone()).await;
+        assert!(part.exists());
+        assert!(journal.exists());
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

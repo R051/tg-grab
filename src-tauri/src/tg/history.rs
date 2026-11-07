@@ -1,12 +1,14 @@
 //! Channel history browsing: paginated video listing for selective downloads.
 
 use crate::tg::client::resolve_chat;
-use crate::tg::links::{make_msg_link, parse_chat_link, sanitize_filename};
 use crate::tg::links::ChatLink;
-use chrono::{Local, Utc};
-use grammers_client::media::Downloadable;
-use grammers_client::message::Message;
+use crate::tg::links::{make_msg_link, parse_chat_link, sanitize_filename};
+use chrono::Local;
 use grammers_client::Client;
+use crate::tg::media_meta;
+use grammers_client::media::Downloadable;
+
+use grammers_client::message::Message;
 use serde::Serialize;
 
 /// One video entry in a history page.
@@ -14,6 +16,7 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct VideoInfo {
     pub msg_id: i32,
+    pub kind: String,
     pub name: String,
     pub size: u64,
     /// Seconds, rounded; 0 when unknown.
@@ -42,11 +45,13 @@ pub struct HistoryPage {
     pub videos: Vec<VideoInfo>,
     /// Pass as `offset_id` to fetch the next (older) page.
     pub next_offset: i32,
+    /// Keep this date while paging within it; null continues into older history.
+    pub next_date: Option<String>,
     pub exhausted: bool,
 }
 
-const PAGE_VIDEOS: usize = 20;
-const MAX_SCAN: usize = 300;
+const PAGE_VIDEOS: usize = 120;
+const MAX_SCAN: usize = 1200;
 
 /// Browse one page of a channel's video history.
 ///
@@ -58,78 +63,77 @@ pub async fn browse(
     link: &str,
     offset_id: i32,
     date: Option<String>,
+    day_start: Option<i64>,
+    day_end: Option<i64>,
 ) -> Result<HistoryPage, String> {
     let chat_link: ChatLink = parse_chat_link(link)?;
     let rc = resolve_chat(st, client, &chat_link).await?;
     let identity = &rc.identity;
 
-    // No date picked → default to the newest day that has content.
-    let date = match date {
-        Some(d) => Some(d),
-        None => {
-            let mut first = client.iter_messages(rc.peer);
-            let latest = first.next().await.map_err(|e| e.to_string())?;
-            match latest {
-                Some(m) => Some(m.date().with_timezone(&Utc).to_rfc3339()),
-                None => {
-                    return Ok(HistoryPage {
-                        chat: ChatInfo {
-                            raw_id: identity.raw_id,
-                            title: identity.title.clone().unwrap_or_else(|| "…".into()),
-                        },
-                        videos: Vec::new(),
-                        next_offset: 0,
-                        exhausted: true,
-                    });
-                }
-            }
-        }
-    };
-
-    // Optional local-day window [start, end) as UTC.
+    // The browser supplies its local-day UTC boundaries (including DST).
     let (day_start, day_end) = match &date {
         Some(day) => {
-            let day = if day.len() > 10 { day[..10].to_string() } else { day.clone() };
-            let d = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
+            let d = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
                 .map_err(|_| "INVALID_DATE".to_string())?;
-            use chrono::TimeZone;
-            let start = Local
-                .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
-                .single()
-                .ok_or("INVALID_DATE".to_string())?;
-            let end = Local
-                .from_local_datetime(&d.and_hms_opt(23, 59, 59).unwrap())
-                .single()
-                .ok_or("INVALID_DATE".to_string())?;
-            (Some(start.with_timezone(&Utc)), Some(end.with_timezone(&Utc)))
+            match (day_start, day_end) {
+                (Some(start), Some(end))
+                    if start >= 0
+                        && end <= i32::MAX as i64
+                        && end > start
+                        && end - start <= 172800 =>
+                {
+                    (Some(start), Some(end))
+                }
+                (None, None) => {
+                    use chrono::TimeZone;
+                    let start = Local
+                        .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+                        .earliest()
+                        .ok_or("INVALID_DATE")?;
+                    let end = Local
+                        .from_local_datetime(
+                            &d.succ_opt()
+                                .ok_or("INVALID_DATE")?
+                                .and_hms_opt(0, 0, 0)
+                                .unwrap(),
+                        )
+                        .earliest()
+                        .ok_or("INVALID_DATE")?;
+                    (Some(start.timestamp()), Some(end.timestamp()))
+                }
+                _ => return Err("INVALID_DATE".into()),
+            }
         }
         None => (None, None),
     };
 
-    let page_cap = 120;
-    let scan_cap = 1200;
-
     let mut videos: Vec<VideoInfo> = Vec::new();
     let mut scanned = 0usize;
     let mut last_id = offset_id;
-    let mut finished = true;
+    let mut finished = false;
+    let mut next_date = date;
 
     let mut messages = client
         .iter_messages(rc.peer)
         .offset_id(offset_id)
-        .max_date(day_end.map(|e| e.timestamp() as i32).unwrap_or(0));
+        .max_date(day_end.map(|e| e as i32).unwrap_or(0));
     loop {
         let Some(msg) = messages.next().await.map_err(|e| e.to_string())? else {
+            finished = true;
+            next_date = None;
             break;
         };
         scanned += 1;
-        last_id = msg.id();
         // Newest → oldest: stop once we leave the requested day.
         if let Some(start) = day_start {
-            if msg.date() < start {
+            if msg.date().timestamp() < start {
+                // Do not consume the first message of the previous day.
+                last_id = msg.id().saturating_add(1);
+                next_date = None;
                 break;
             }
         }
+        last_id = msg.id();
         if let Some(info) = video_entry(
             st,
             &msg,
@@ -138,14 +142,14 @@ pub async fn browse(
             identity.title.as_deref().unwrap_or(""),
         ) {
             videos.push(info);
-            if videos.len() >= page_cap {
+            if videos.len() >= PAGE_VIDEOS {
                 // Page full — more content may exist below (unless the
                 // requested day was scanned to its start, handled above).
                 finished = false;
                 break;
             }
         }
-        if scanned >= scan_cap {
+        if scanned >= MAX_SCAN {
             finished = false;
             break;
         }
@@ -158,6 +162,7 @@ pub async fn browse(
         },
         videos,
         next_offset: last_id,
+        next_date,
         exhausted: finished,
     })
 }
@@ -172,10 +177,12 @@ fn video_entry(
     channel_title: &str,
 ) -> Option<VideoInfo> {
     let media = msg.media()?;
-    let meta = crate::tg::video_meta(&media)?;
+    let meta = media_meta(&media)?;
     let msg_id = msg.id();
     let name = sanitize_filename(
-        &meta.name.unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
+        &meta
+            .name
+            .unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
     );
 
     // The file may sit at the downloads root (legacy) or inside the
@@ -185,16 +192,14 @@ fn video_entry(
         .with_timezone(&chrono::Local)
         .format("%Y-%m-%d")
         .to_string();
-    let chan = sanitize_filename(
-        if channel_title.is_empty() {
-            username.unwrap_or("未知频道")
-        } else {
-            channel_title
-        },
-    );
+    let chan = sanitize_filename(if channel_title.is_empty() {
+        username.unwrap_or("未知频道")
+    } else {
+        channel_title
+    });
     let candidates = [
-        st.downloads_dir.join(&name),
-        st.downloads_dir.join(&chan).join(&day).join(&name),
+        st.default_downloads_dir.join(&name),
+        st.default_downloads_dir.join(&chan).join(&day).join(&name),
     ];
     let mut local: u64 = 0;
     for c in &candidates {
@@ -210,6 +215,7 @@ fn video_entry(
 
     Some(VideoInfo {
         msg_id,
+        kind: meta.kind.as_str().to_string(),
         name,
         size: meta.size,
         duration: meta.duration_secs.map(|d| d as u64).unwrap_or(0),
@@ -286,7 +292,7 @@ fn best_thumb(media: &grammers_client::media::Media) -> Option<ThumbSource> {
 }
 
 fn thumb_path(st: &crate::state::Inner, raw_id: i64, msg_id: i32) -> std::path::PathBuf {
-    st.downloads_dir
+    st.default_downloads_dir
         .join("thumbs")
         .join(format!("{raw_id}_{msg_id}.jpg"))
 }

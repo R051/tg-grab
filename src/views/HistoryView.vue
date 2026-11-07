@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "../lib/backend";
-import { NButton, NDatePicker, NInput, useMessage } from "naive-ui";
+import { errorText } from "../lib/errors";
+import { NButton, NDatePicker, NInput, NText, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import type { HistoryPage, VideoInfo, WatchEntry } from "../types";
 import AppIcon from "../components/AppIcon.vue";
@@ -10,277 +11,176 @@ import AppIcon from "../components/AppIcon.vue";
 const { t, locale } = useI18n();
 const store = useAppStore();
 const message = useMessage();
-
 const link = ref("");
 const browsing = ref(false);
 const downloading = ref(false);
 const chatTitle = ref("");
+const chatRawId = ref(0);
 const videos = ref<VideoInfo[]>([]);
 const exhausted = ref(false);
+const nextOffset = ref(0);
+const nextDate = ref<string | null>(null);
+const queryDate = ref<string | null>(null);
 const selected = ref<Set<string>>(new Set());
 const recents = ref<WatchEntry[]>([]);
-const dateFilter = ref<number | null>(null); // ms timestamp of picked day
-const thumbs = ref<Record<string, string>>({}); // key: rawId_msgId
+const dateFilter = ref<number | null>(null);
+const thumbs = ref<Record<string, string>>({});
 const thumbsLoading = ref(false);
-const chatRawId = ref(0);
-const searchingDay = ref<string | null>(null);
-// Monotonic request sequence: stale responses are discarded.
+type Query = { link: string; date: string | null; dayStart?: number; dayEnd?: number };
+let currentQuery: Query | null = null;
 let browseSeq = 0;
 let thumbSeq = 0;
-const MAX_EMPTY_DAYS = 60;
+onUnmounted(() => { browseSeq++; thumbSeq++; });
 void refreshRecents();
 
-interface DayGroup {
-  key: string;
-  label: string;
-  videos: VideoInfo[];
-}
-
-const grouped = computed<DayGroup[]>(() => {
-  const groups: DayGroup[] = [];
-  const index = new Map<string, DayGroup>();
-  for (const v of videos.value) {
-    let day = "";
-    if (v.date) {
-      try {
-        day = new Date(v.date).toLocaleDateString(locale.value, {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        });
-      } catch {
-        day = "";
-      }
-    }
-    const key = day || "—";
-    if (!index.has(key)) {
-      const g: DayGroup = { key, label: key, videos: [] };
-      index.set(key, g);
-      groups.push(g);
-    }
-    index.get(key)!.videos.push(v);
+const grouped = computed(() => {
+  const groups = new Map<string, { key: string; videos: VideoInfo[] }>();
+  for (const video of videos.value) {
+    const date = video.date ? new Date(video.date) : null;
+    const key = date && !isNaN(date.getTime()) ? date.toLocaleDateString(locale.value,
+      { year: "numeric", month: "2-digit", day: "2-digit" }) : "—";
+    if (!groups.has(key)) groups.set(key, { key, videos: [] });
+    groups.get(key)!.videos.push(video);
   }
-  return groups;
+  return [...groups.values()];
 });
-
-function fmtDuration(sec: number): string {
-  if (!sec) return "";
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  return h > 0
-    ? h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
-    : m + ":" + String(s).padStart(2, "0");
+const taskStates = computed(() => {
+  const states = new Map<string, "queued" | "downloading" | "success">();
+  for (const result of store.results) {
+    if (result.status === "success" && store.files.some((file) => file.name === (result.path ?? result.name))) {
+      states.set(result.url, "success");
+    }
+  }
+  for (const pending of store.pending) states.set(pending.url, "queued");
+  for (const active of store.activeTasks) states.set(active.url, "downloading");
+  return states;
+});
+function videoState(video: VideoInfo) { return taskStates.value.get(video.url) ?? (video.downloaded ? "success" : null); }
+function selectable(video: VideoInfo) { return !videoState(video); }
+function fmtDuration(seconds: number): string {
+  if (!seconds) return "";
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor((seconds % 3600) / 60);
+  return (hours ? `${hours}:${String(minutes).padStart(2, "0")}` : String(minutes)) + `:${String(seconds % 60).padStart(2, "0")}`;
 }
-
 function pickedDay(): string | null {
-  if (!dateFilter.value) return null;
-  const d = new Date(dateFilter.value);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  if (dateFilter.value === null) return null;
+  const date = new Date(dateFilter.value);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-
-async function refreshRecents() {
-  recents.value = await invoke<WatchEntry[]>("history_recent").catch(() => []);
+function freezeQuery(): Query {
+  const date = pickedDay();
+  if (dateFilter.value === null) return { link: link.value.trim(), date };
+  const chosen = new Date(dateFilter.value);
+  const year = chosen.getFullYear(), month = chosen.getMonth(), day = chosen.getDate();
+  return { link: link.value.trim(), date,
+    dayStart: new Date(year, month, day).getTime() / 1000,
+    dayEnd: new Date(year, month, day + 1).getTime() / 1000 };
 }
-
+async function refreshRecents() { recents.value = await invoke<WatchEntry[]>("history_recent").catch(() => []); }
 function browseRecent(entry: WatchEntry) {
-  link.value = entry.username ? "https://t.me/" + entry.username : "https://t.me/c/" + entry.raw_id;
+  link.value = entry.username ? `https://t.me/${entry.username}` : `https://t.me/c/${entry.raw_id}`;
   dateFilter.value = null;
   void browse();
 }
-
 async function removeRecent(entry: WatchEntry) {
-  await invoke("history_recent_remove", { rawId: entry.raw_id }).catch(() => undefined);
-  await refreshRecents();
+  try { await invoke("history_recent_remove", { rawId: entry.raw_id }); await refreshRecents(); }
+  catch (error) { message.error(errorText(error, t)); }
 }
-
+function applyCursor(page: HistoryPage) {
+  nextOffset.value = page.nextOffset;
+  nextDate.value = page.nextDate;
+  exhausted.value = page.exhausted;
+}
 async function browse() {
   if (!link.value.trim()) return;
-  const seq = ++browseSeq;
-  const frozenLink = link.value.trim();
-  const frozenDay = pickedDay();
+  const sequence = ++browseSeq;
+  thumbSeq++;
+  const query = freezeQuery();
+  currentQuery = null;
+  queryDate.value = query.date;
+  videos.value = []; selected.value = new Set(); chatTitle.value = "";
   browsing.value = true;
   try {
-    const page = await invoke<HistoryPage>("history_page", {
-      link: frozenLink,
-      offsetId: 0,
-      date: frozenDay,
-    });
-    if (seq !== browseSeq) return; // stale response — a newer query won
+    const page = await invoke<HistoryPage>("history_page", { ...query, offsetId: 0 });
+    if (sequence !== browseSeq) return;
+    currentQuery = query;
     chatTitle.value = page.chat.title;
     chatRawId.value = page.chat.rawId;
     videos.value = page.videos;
-    selected.value = new Set();
-    thumbs.value = {};
-    exhausted.value = false;
-    void refreshRecents();
-    void loadThumbs(frozenLink, page.chat.rawId);
-    if (page.videos.length) {
-      message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
-    } else {
-      message.warning(t("history.empty"));
-    }
-  } catch (e) {
-    if (seq === browseSeq) message.error(String(e));
-  } finally {
-    if (seq === browseSeq) browsing.value = false;
-  }
+    applyCursor(page);
+    void refreshRecents(); void loadThumbs();
+  } catch (error) { if (sequence === browseSeq) message.error(errorText(error, t)); }
+  finally { if (sequence === browseSeq) browsing.value = false; }
 }
-
-function dayKeyOf(v: VideoInfo): string | null {
-  if (!v.date) return null;
-  try {
-    const d = new Date(v.date);
-    if (isNaN(d.getTime())) return null;
-    const p = (n: number) => String(n).padStart(2, "0");
-    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-  } catch {
-    return null;
-  }
-}
-
-function shiftDay(day: string, delta: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
-  if (!m) return day;
-  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (isNaN(dt.getTime())) return day;
-  dt.setDate(dt.getDate() + delta);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate());
-}
-
-/// Append the whole day right before the oldest loaded one (dedup by msg id).
-/// Walks back past empty days (up to 3) before declaring exhausted.
+// Follow the server cursor, including pages containing only non-video messages.
 async function loadPrevDay() {
-  if (browsing.value) return;
-  const seq = ++browseSeq;
-  const frozenLink = link.value.trim();
-  const days = videos.value.map(dayKeyOf).filter(Boolean) as string[];
-  if (!days.length) return;
-  const oldest = days.sort()[0];
-  let target = shiftDay(oldest, -1);
-  const seen = new Set(videos.value.map((v) => v.msgId));
-
-  for (let attempt = 0; attempt < MAX_EMPTY_DAYS; attempt++) {
-    browsing.value = true;
-    searchingDay.value = target;
-    let page: HistoryPage;
-    try {
-      page = await invoke<HistoryPage>("history_page", {
-        link: frozenLink,
-        offsetId: 0,
-        date: target,
-      });
-    } catch (e) {
-      message.error(String(e));
-      browsing.value = false;
-      searchingDay.value = null;
-      return;
-    }
-    if (seq !== browseSeq) return; // superseded
-
-    const fresh = page.videos.filter((v) => !seen.has(v.msgId));
-    if (fresh.length) {
-      if (!chatRawId.value) chatRawId.value = page.chat.rawId;
-      videos.value = [...videos.value, ...fresh];
-      void loadThumbs(frozenLink, page.chat.rawId);
-      exhausted.value = false;
-      searchingDay.value = null;
-      browsing.value = false;
-      return;
-    }
-    target = shiftDay(target, -1);
-  }
-  browsing.value = false;
-  searchingDay.value = null;
-  exhausted.value = true;
+  if (browsing.value || exhausted.value || !currentQuery) return;
+  const sequence = ++browseSeq;
+  const query: Query = { ...currentQuery, date: nextDate.value };
+  if (!query.date) { delete query.dayStart; delete query.dayEnd; }
+  const offset = nextOffset.value;
+  browsing.value = true;
+  try {
+    const page = await invoke<HistoryPage>("history_page", { ...query, offsetId: offset });
+    if (sequence !== browseSeq) return;
+    const seen = new Set(videos.value.map((video) => video.msgId));
+    videos.value.push(...page.videos.filter((video) => !seen.has(video.msgId)));
+    currentQuery = query;
+    applyCursor(page);
+    void loadThumbs();
+  } catch (error) { if (sequence === browseSeq) message.error(errorText(error, t)); }
+  finally { if (sequence === browseSeq) browsing.value = false; }
 }
-
-async function loadThumbs(frozenLink?: string, rawId?: number) {
-  if (thumbsLoading.value) return;
-  const seq = ++thumbSeq;
-  const useLink = frozenLink ?? link.value.trim();
-  if (!useLink) return;
-  const channelRaw = rawId ?? chatRawId.value;
-  const need = videos.value
-    .filter((v) => v.hasThumb && !thumbs.value[channelRaw + "_" + v.msgId])
-    .map((v) => v.msgId);
-  if (!need.length) return;
+async function loadThumbs() {
+  if (!currentQuery) return;
+  const sequence = ++thumbSeq, generation = browseSeq;
+  const query = currentQuery, rawId = chatRawId.value;
+  const need = videos.value.slice(-300).filter((video) => video.hasThumb && !thumbs.value[`${rawId}_${video.msgId}`]).map((video) => video.msgId);
+  if (!need.length) { thumbsLoading.value = false; return; }
   thumbsLoading.value = true;
   try {
-    const list = await invoke<{ msgId: number; data: string }[]>("history_thumbs", {
-      link: useLink,
-      msgIds: need,
-    });
-    if (seq !== thumbSeq) return; // stale
-    const next = { ...thumbs.value };
-    for (const item of list) {
-      next[channelRaw + "_" + item.msgId] = "data:image/jpeg;base64," + item.data;
+    for (let index = 0; index < need.length; index += 50) {
+      const list = await invoke<{ msgId: number; data: string }[]>("history_thumbs", {
+        link: query.link, msgIds: need.slice(index, index + 50),
+      });
+      if (sequence !== thumbSeq || generation !== browseSeq) return;
+      const next = { ...thumbs.value };
+      for (const item of list) next[`${rawId}_${item.msgId}`] = `data:image/jpeg;base64,${item.data}`;
+      for (const key of Object.keys(next).slice(0, Math.max(0, Object.keys(next).length - 300))) delete next[key];
+      thumbs.value = next;
     }
-    // Cap the in-memory cache to ~300 entries (drop oldest first).
-    const keys = Object.keys(next);
-    if (keys.length > 300) {
-      for (const k of keys.slice(0, keys.length - 300)) delete next[k];
-    }
-    thumbs.value = next;
-  } catch {
-    /* thumbs are decorative — ignore failures */
-  } finally {
-    if (seq === thumbSeq) thumbsLoading.value = false;
-  }
+  } catch { /* Individual thumbnails can be retried on the next page. */ }
+  finally { if (sequence === thumbSeq) thumbsLoading.value = false; }
 }
-
-function thumbKey(v: VideoInfo): string {
-  // key by channel+msg so switching channels cannot reuse stale images
-  return chatRawId.value + "_" + v.msgId;
-}
-
-function isSelected(v: VideoInfo): boolean {
-  return selected.value.has(v.url);
-}
-
-function toggleSelect(v: VideoInfo) {
+function thumbKey(video: VideoInfo) { return `${chatRawId.value}_${video.msgId}`; }
+function isSelected(video: VideoInfo) { return selectable(video) && selected.value.has(video.url); }
+function toggleSelect(video: VideoInfo) {
+  if (!selectable(video)) return;
   const next = new Set(selected.value);
-  if (next.has(v.url)) next.delete(v.url);
-  else next.add(v.url);
+  if (next.has(video.url)) next.delete(video.url); else next.add(video.url);
   selected.value = next;
 }
-
-function selectableCount(): number {
-  return videos.value.filter((v) => !v.downloaded).length;
+const selectableCount = computed(() => videos.value.filter(selectable).length);
+const selectedCount = computed(() => videos.value.filter(isSelected).length);
+const pageAllSelected = computed(() => selectableCount.value > 0 && videos.value.filter(selectable).every(isSelected));
+function toggleSelectAll(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked;
+  selected.value = new Set(checked ? videos.value.filter(selectable).map((video) => video.url) : []);
 }
-
-function pageAllSelected(): boolean {
-  const all = videos.value.filter((v) => !v.downloaded);
-  return all.length > 0 && all.every((v) => isSelected(v));
-}
-
-function toggleSelectAll(ev: Event) {
-  const checked = (ev.target as HTMLInputElement).checked;
-  const next = new Set(selected.value);
-  for (const v of videos.value) {
-    if (v.downloaded) continue;
-    if (checked) next.add(v.url);
-    else next.delete(v.url);
-  }
-  selected.value = next;
-}
-
 async function downloadSelected() {
-  const urls = videos.value.filter((v) => isSelected(v)).map((v) => v.url);
+  if (downloading.value) return;
+  const urls = [...new Set(videos.value.filter(isSelected).map((video) => video.url))];
   if (!urls.length) return;
+  const generation = browseSeq;
   downloading.value = true;
   try {
-    await invoke<number[]>("download_urls", { urls });
-    message.success(t("history.added", { n: urls.length }));
-    selected.value = new Set();
+    const ids = await invoke<number[]>("download_urls", { urls });
+    message.success(t("history.added", { n: ids.length }));
+    if (generation === browseSeq) selected.value = new Set([...selected.value].filter((url) => !urls.includes(url)));
     await store.refreshQueue();
-  } catch (e) {
-    message.error(String(e));
-  } finally {
-    downloading.value = false;
-  }
+  } catch (error) { message.error(errorText(error, t)); }
+  finally { downloading.value = false; }
 }
 </script>
 
@@ -318,14 +218,15 @@ async function downloadSelected() {
     </div>
   </div>
 
-  <div v-if="videos.length" class="panel">
+  <div v-if="chatTitle" class="panel">
     <div class="panel-title">
       <span>{{ chatTitle }}</span>
       <span class="count">{{ videos.length }}</span>
-      <n-text v-if="dateFilter" depth="3" style="font-size: 11.5px; margin-left: auto">
+      <n-text v-if="queryDate" depth="3" style="font-size: 11.5px; margin-left: auto">
         {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
       </n-text>
     </div>
+    <div v-if="!videos.length" class="empty">{{ exhausted ? t("history.empty") : t("history.noVideosOnPage") }}</div>
     <div class="grid">
       <template v-for="g in grouped" :key="g.key">
         <div class="day-divider">{{ g.key }}</div>
@@ -333,8 +234,8 @@ async function downloadSelected() {
           v-for="v in g.videos"
           :key="v.msgId"
           class="vcard"
-          :class="{ downloaded: v.downloaded, selected: isSelected(v) }"
-          @click="!v.downloaded && toggleSelect(v)"
+          :class="{ downloaded: videoState(v) === 'success', selected: isSelected(v) }"
+          @click="toggleSelect(v)" role="button" :tabindex="selectable(v) ? 0 : -1" :aria-label="v.name" :aria-disabled="!selectable(v)" @keydown.enter.prevent="toggleSelect(v)" @keydown.space.prevent="toggleSelect(v)"
         >
           <div class="thumb-wrap">
             <img
@@ -349,14 +250,15 @@ async function downloadSelected() {
               type="checkbox"
               class="check"
               :checked="isSelected(v)"
-              :disabled="v.downloaded"
+              :disabled="!selectable(v)"
               @click.stop
               @change="toggleSelect(v)"
             />
             <span v-if="v.duration" class="duration">{{ fmtDuration(v.duration) }}</span>
-            <span v-if="v.downloaded" class="done-badge">✅</span>
+            <span v-if="videoState(v) === 'success'" class="done-badge">✅</span>
           </div>
           <div class="vname" :title="v.name">{{ v.name }}</div>
+          <span v-if="videoState(v) && videoState(v) !== 'success'" class="pill" :class="videoState(v)">{{ t(`download.status.${videoState(v)}`) }}</span>
         </div>
       </template>
     </div>
@@ -364,20 +266,20 @@ async function downloadSelected() {
       <n-button
         type="primary"
         size="small"
-        :disabled="!selected.size"
+        :disabled="!selectedCount"
         :loading="downloading"
         @click="downloadSelected"
       >
-        {{ t("history.downloadSelected", { n: selected.size }) }}
+        {{ t("history.downloadSelected", { n: selectedCount }) }}
       </n-button>
       <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="loadPrevDay">
-        {{ searchingDay ? t("history.searchingDay", { day: searchingDay }) : t("history.loadPrevDay") }}
+        {{ t("history.loadMore") }}
       </n-button>
       <label class="selall">
         <input
           type="checkbox"
-          :checked="pageAllSelected()"
-          :disabled="selectableCount() === 0"
+          :checked="pageAllSelected"
+          :disabled="selectableCount === 0"
           @change="toggleSelectAll"
         />
         {{ t("history.selectAll") }}
@@ -385,12 +287,7 @@ async function downloadSelected() {
     </div>
   </div>
 
-  <div v-else-if="chatTitle" class="panel">
-    <div class="empty">
-      <span class="empty-icon">🎞</span>
-      {{ t("history.empty") }}
-    </div>
-  </div>
+
 </template>
 
 <style scoped>

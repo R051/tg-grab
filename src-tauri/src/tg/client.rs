@@ -5,9 +5,9 @@ use crate::state::Inner;
 use grammers_client::peer::Peer;
 use grammers_client::{Client, tl};
 use grammers_mtsender::{ConnectionParams, SenderPool};
+use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerAuth, PeerId, PeerInfo, PeerRef};
-use grammers_session::Session;
 use std::sync::Arc;
 
 /// Raw identity of a channel/supergroup extracted from a resolved [`Peer`].
@@ -92,6 +92,7 @@ fn build_params(cfg: &Config) -> ConnectionParams {
 
 /// Return the connected client, connecting a new pool on first use.
 pub async fn ensure_client(st: &Inner) -> Result<Client, String> {
+    let _connect = st.connect_lock.lock().await;
     if let Some(c) = st.client.read().await.clone() {
         return Ok(c);
     }
@@ -125,6 +126,7 @@ pub async fn ensure_client(st: &Inner) -> Result<Client, String> {
 
 /// Drop the current client/pool (logout or credential change).
 pub async fn reset_client(st: &Inner) {
+    let _connect = st.connect_lock.lock().await;
     if let Some(handle) = st.pool_handle.lock().await.take() {
         handle.quit();
     }
@@ -203,12 +205,9 @@ async fn session_peer_auth(st: &Inner, id: PeerId) -> Option<PeerAuth> {
 pub async fn logged_in_name(client: &Client) -> Option<String> {
     let me = client.get_me().await.ok()?;
     Some(
-        [
-            me.first_name().unwrap_or(""),
-            me.last_name().unwrap_or(""),
-        ]
-        .join(" ")
-        .trim()
-        .to_string(),
+        [me.first_name().unwrap_or(""), me.last_name().unwrap_or("")]
+            .join(" ")
+            .trim()
+            .to_string(),
     )
 }

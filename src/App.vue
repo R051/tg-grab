@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, setUnauthorizedHandler, setToken, isDesktop } from "./lib/backend";
 import {
@@ -29,6 +29,8 @@ const tab = ref("download");
 
 const webNeedToken = ref(false);
 const webToken = ref("");
+const languageSaving = ref(false);
+const languageError = ref("");
 if (!isDesktop) {
   setUnauthorizedHandler(() => {
     webNeedToken.value = true;
@@ -78,27 +80,33 @@ function go(key: string, disabled?: boolean) {
   tab.value = key;
 }
 
-function toggleLang() {
+async function toggleLang() {
+  if (languageSaving.value) return;
+  const previous = locale.value as "zh-CN" | "en";
   const next = locale.value === "zh-CN" ? "en" : "zh-CN";
+  languageSaving.value = true;
+  languageError.value = "";
   setLocale(next);
-  void invoke("save_settings", { lang: next }).catch(() => undefined);
+  try { await invoke("save_settings", { lang: next }); await store.refreshSettings(); }
+  catch (error) { setLocale(previous); languageError.value = error instanceof Error ? error.message : String(error); }
+  finally { languageSaving.value = false; }
 }
 
 watch(tab, (v) => {
-  if (v === "download") void store.refreshFiles();
+  if (v === "download") void store.refreshFiles().catch(() => undefined);
 });
 
 watch(
-  () => store.configured,
+  () => store.status?.configured,
   (ok) => {
-    if (!ok) tab.value = "settings";
+    if (ok === false) tab.value = "settings";
   },
   { immediate: true },
 );
 
-onMounted(() => {
-  void store.init();
-});
+function retryInit() { void store.init().catch(() => undefined); }
+onMounted(retryInit);
+onBeforeUnmount(() => store.dispose());
 </script>
 
 <template>
@@ -145,6 +153,9 @@ onMounted(() => {
               :key="n.key"
               class="nav-item"
               :class="{ active: tab === n.key, disabled: n.disabled }"
+              :disabled="n.disabled"
+              :aria-label="n.label"
+              :aria-current="tab === n.key ? 'page' : undefined"
               @click="go(n.key, n.disabled)"
             >
               <AppIcon :name="n.icon" />
@@ -165,7 +176,7 @@ onMounted(() => {
               <div class="avatar" style="background: #30363d">?</div>
               <div class="name" style="color: var(--text-dim)">{{ t("app.notSignedIn") }}</div>
             </div>
-            <button class="ghost-btn" style="text-align: center" @click="toggleLang">
+            <button class="ghost-btn" :disabled="languageSaving" style="text-align: center" @click="toggleLang">
               {{ locale === "zh-CN" ? "English" : "中文" }}
             </button>
           </div>
@@ -173,6 +184,13 @@ onMounted(() => {
 
         <!-- Content -->
         <main class="content">
+          <div v-if="store.initState === 'error'" class="connection-banner" role="alert">
+            {{ t('common.initializationFailed') }}: {{ store.initError }}
+            <n-button size="small" @click="retryInit">{{ t('common.retry') }}</n-button>
+          </div>
+          <div v-else-if="store.initState === 'loading'" class="connection-banner" role="status">{{ t('common.loading') }}</div>
+          <div v-else-if="!isDesktop && store.connection !== 'connected'" class="connection-banner" role="status">{{ t('common.reconnecting') }}</div>
+          <div v-if="languageError" class="connection-banner" role="alert">{{ languageError }}</div>
           <div v-show="tab === 'download'" class="page">
             <DownloadView />
           </div>
@@ -192,6 +210,7 @@ onMounted(() => {
 </template>
 
 <style>
+.connection-banner { padding: 10px 24px; color: var(--yellow); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .shell {
   display: flex;
   height: 100vh;

@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config 
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./
 COPY src-tauri/build.rs build.rs
 COPY src-tauri/src ./src
-RUN cargo build --release --no-default-features --features server
+RUN cargo build --locked --release --no-default-features --features server --bin tg-grab-server
 
 # ── stage 3: runtime ──
 FROM debian:bookworm-slim

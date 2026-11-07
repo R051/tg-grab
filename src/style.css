@@ -47,7 +47,8 @@ body {
 
 /* ── page shell ── */
 .page {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 24px 28px 40px;
   display: flex;
@@ -178,6 +179,8 @@ body {
   white-space: nowrap;
 }
 .ghost-btn:hover { border-color: var(--border); color: var(--text); background: var(--surface); }
+.ghost-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .ghost-btn.danger:hover { border-color: rgba(248, 113, 113, 0.4); color: var(--red); }
 
 /* ── sidebar ── */

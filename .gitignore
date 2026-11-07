@@ -36,3 +36,8 @@ src-tauri/session.*
 config.json
 config.json.bak
 downloads/
+
+# Local server state
+data/
+*.session-wal
+*.session-shm
