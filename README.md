@@ -58,6 +58,10 @@ tg-grab speaks MTProto with your own Telegram account, so it needs **your** API 
 - Rate limits (FLOOD_WAIT) are handled automatically for short waits; long waits fail the task with a clear message — retry later.
 - Linux/macOS builds are untested but should work via standard Tauri cross-platform flow.
 
+## Disclaimer
+
+This tool is for **personal use only**. Download content from channels you are a member of, and respect copyright and Telegram's Terms of Service. The authors are not responsible for misuse.
+
 ## License
 
 [MIT](LICENSE)
