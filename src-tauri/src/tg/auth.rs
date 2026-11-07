@@ -3,7 +3,6 @@
 use crate::state::{Inner, SharedState};
 use crate::tg::client::{ensure_client, logged_in_name};
 use serde::Serialize;
-use tauri::AppHandle;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "status")]
@@ -29,7 +28,7 @@ pub async fn send_code(st: &Inner, phone: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn sign_in(st: &SharedState, app: &AppHandle, code: &str) -> Result<SignInOutcome, String> {
+pub async fn sign_in(st: &SharedState, code: &str) -> Result<SignInOutcome, String> {
     let client = ensure_client(st).await?;
     let token = st
         .login_token
@@ -40,7 +39,7 @@ pub async fn sign_in(st: &SharedState, app: &AppHandle, code: &str) -> Result<Si
     match client.sign_in(&token, code).await {
         Ok(_) => {
             let user = logged_in_name(&client).await.unwrap_or_else(|| "TG".into());
-            on_authorized(st, app).await;
+            on_authorized(st).await;
             Ok(SignInOutcome::Ok { user })
         }
         Err(grammers_client::SignInError::PasswordRequired(password_token)) => {
@@ -53,7 +52,7 @@ pub async fn sign_in(st: &SharedState, app: &AppHandle, code: &str) -> Result<Si
     }
 }
 
-pub async fn check_password(st: &SharedState, app: &AppHandle, password: &str) -> Result<String, String> {
+pub async fn check_password(st: &SharedState, password: &str) -> Result<String, String> {
     let client = ensure_client(st).await?;
     let token = st
         .password_token
@@ -66,7 +65,7 @@ pub async fn check_password(st: &SharedState, app: &AppHandle, password: &str) -
         .await
         .map_err(|e| format!("PASSWORD: {e}"))?;
     let user = logged_in_name(&client).await.unwrap_or_else(|| "TG".into());
-    on_authorized(st, app).await;
+    on_authorized(st).await;
     Ok(user)
 }
 
@@ -82,10 +81,10 @@ pub async fn logout(st: &Inner) -> Result<(), String> {
 }
 
 /// Fire-and-forget post-login work: warm the peer cache and start the watcher.
-async fn on_authorized(st: &SharedState, app: &AppHandle) {
+async fn on_authorized(st: &SharedState) {
     // Warm the session peer cache (helps update catch-up and t.me/c resolution).
     let cache_st = st.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         if let Ok(client) = ensure_client(&cache_st).await {
             let mut dialogs = client.iter_dialogs();
             for _ in 0..100 {
@@ -95,5 +94,5 @@ async fn on_authorized(st: &SharedState, app: &AppHandle) {
             }
         }
     });
-    crate::tg::watcher::spawn(st.clone(), app.clone());
+    crate::tg::watcher::spawn(st.clone());
 }

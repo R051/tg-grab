@@ -92,6 +92,7 @@ impl QueueState {
 }
 
 pub struct Inner {
+    pub bus: crate::events::EventBus,
     pub config_path: PathBuf,
     pub session_path: PathBuf,
     pub queue_path: PathBuf,

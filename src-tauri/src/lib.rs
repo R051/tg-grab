@@ -1,4 +1,6 @@
+mod api;
 mod commands;
+mod events;
 mod config;
 mod state;
 mod tg;
@@ -59,6 +61,7 @@ pub fn run() {
             let config = config::Config::load(&config_path);
 
             let st: SharedState = Arc::new(Inner {
+                bus: events::EventBus::new(),
                 queue_path: data_dir.join("queue.json"),
                 config_path,
                 session_path,
@@ -92,13 +95,11 @@ pub fn run() {
 
             // Download workers run for the whole app lifetime.
             let worker_st = st.clone();
-            let worker_app = app.handle().clone();
-            tg::queue::spawn_workers(worker_st, worker_app);
-
-            // The watcher waits for authorization, then streams updates.
             let watch_st = st.clone();
-            let watch_app = app.handle().clone();
-            tg::watcher::spawn(watch_st, watch_app);
+            tauri::async_runtime::block_on(async move {
+                tg::queue::spawn_workers(worker_st);
+                tg::watcher::spawn(watch_st);
+            });
 
             Ok(())
         })

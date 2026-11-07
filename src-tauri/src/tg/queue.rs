@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 /// A finished (or failed) queue item, pushed to the frontend.
@@ -93,21 +92,20 @@ async fn copy_auth_to_dc(
 
 /// Spawn download workers (1 = sequential across files; each file itself
 /// downloads with 4 parallel chunk connections). Capped at 4.
-pub fn spawn_workers(st: SharedState, app: AppHandle) {
+pub fn spawn_workers(st: SharedState) {
     let n = {
         let cfg = st.config.blocking_read();
         cfg.concurrency.clamp(1, 4)
     };
     for _ in 0..n {
         let st = st.clone();
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            worker_loop(st, app).await;
+        tokio::spawn(async move {
+            worker_loop(st).await;
         });
     }
 }
 
-async fn worker_loop(st: SharedState, app: AppHandle) {
+async fn worker_loop(st: SharedState) {
     loop {
         // Restored tasks at startup race the login: wait for an authorized
         // client (up to 2 min) before failing anything with NOT_LOGGED_IN.
@@ -145,7 +143,10 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
                     let mut results = st.queue.results.lock().await;
                     results.push(r.clone());
                 }
-                let _ = app.emit("queue:result", &r);
+                st.bus.emit(
+                    "queue:result",
+                    serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
+                );
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
@@ -159,7 +160,7 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             // download still knows about it.
             *st.queue.in_flight.lock().await = j.clone();
             st.queue.persist(&st.queue_path).await;
-            let _ = app.emit("queue:changed", true);
+            st.bus.emit("queue:changed", serde_json::Value::Bool(true));
             j
         };
         let Some(job) = job else {
@@ -167,7 +168,7 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             continue;
         };
 
-        let result = process_job(&st, &app, &job, &client).await;
+        let result = process_job(&st, &job, &client).await;
 
         {
             let mut results = st.queue.results.lock().await;
@@ -180,13 +181,16 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
         *st.queue.active.lock().await = None;
         *st.queue.in_flight.lock().await = None;
         st.queue.persist(&st.queue_path).await;
-        let _ = app.emit("queue:result", &result);
-        let _ = app.emit("queue:changed", true);
+        st.bus.emit(
+            "queue:result",
+            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
+        );
+        st.bus.emit("queue:changed", serde_json::Value::Bool(true));
     }
 }
 
 /// Full pipeline for one job: parse link → fetch message → download video.
-async fn process_job(st: &SharedState, app: &AppHandle, job: &Job, client: &Client) -> TaskResult {
+async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult {
     let fail_str = |msg: &str| TaskResult::failed(job.id, &job.url, msg);
 
     let (chat, msg_id) = match parse_msg_link(&job.url) {
@@ -278,18 +282,20 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job, client: &Clie
         percent: 0.0,
     };
     *st.queue.active.lock().await = Some(progress.clone());
-    let _ = app.emit("queue:progress", &progress);
+    st.bus.emit(
+        "queue:progress",
+        serde_json::to_value(&progress).unwrap_or(serde_json::Value::Null),
+    );
 
     let done = Arc::new(AtomicU64::new(0));
     let emitting = Arc::new(AtomicBool::new(true));
 
     // Progress emitter: polls the shared byte counter ~5x/sec.
     let emit_st = st.clone();
-    let emit_app = app.clone();
     let emit_done = done.clone();
     let emit_flag = emitting.clone();
     let mut emit_progress = progress;
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         while emit_flag.load(Ordering::Relaxed) {
             let current = emit_done.load(Ordering::Relaxed);
             emit_progress.current = current;
@@ -299,7 +305,10 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job, client: &Clie
                 0.0
             };
             *emit_st.queue.active.lock().await = Some(emit_progress.clone());
-            let _ = emit_app.emit("queue:progress", &emit_progress);
+            emit_st.bus.emit(
+                "queue:progress",
+                serde_json::to_value(&emit_progress).unwrap_or(serde_json::Value::Null),
+            );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     });
@@ -364,7 +373,7 @@ async fn download_parallel(
         let client = client.clone();
         let done = done.clone();
         let auth_copied = auth_copied.clone();
-        tasks.push(tauri::async_runtime::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             let mut dc = home_dc;
             let mut retry_offset: Option<i64> = None;
             loop {

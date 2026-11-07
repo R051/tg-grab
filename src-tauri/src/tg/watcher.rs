@@ -9,17 +9,16 @@ use grammers_client::update::Update;
 use grammers_client::Client;
 use grammers_session::types::PeerId;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
 
 /// Spawn the always-running watcher task. It waits for authorization,
 /// then consumes the update stream; on disconnect it waits and retries.
-pub fn spawn(st: SharedState, app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        watcher_loop(st, app).await;
+pub fn spawn(st: SharedState) {
+    tokio::spawn(async move {
+        watcher_loop(st).await;
     });
 }
 
-async fn watcher_loop(st: SharedState, app: AppHandle) {
+async fn watcher_loop(st: SharedState) {
     loop {
         // Wait until a connected, authorized client exists.
         let client = loop {
@@ -33,11 +32,11 @@ async fn watcher_loop(st: SharedState, app: AppHandle) {
         };
 
         // One-shot catch-up for messages missed while the app was closed.
-        if let Err(e) = catchup_watched(&st, &client, &app).await {
+        if let Err(e) = catchup_watched(&st, &client).await {
             log::warn!("catchup failed: {e}");
         }
         // Periodic belt-and-braces sweep (long connections can drop updates).
-        spawn_sweeper(st.clone(), app.clone());
+        spawn_sweeper(st.clone());
 
         // Take the raw updates channel (recreated on every reconnect).
         let rx = st.updates_rx.lock().await.take();
@@ -60,7 +59,7 @@ async fn watcher_loop(st: SharedState, app: AppHandle) {
         loop {
             match stream.next().await {
                 Ok(update) => {
-                    if let Err(e) = handle_update(&st, &client, &app, update).await {
+                    if let Err(e) = handle_update(&st, &client, update).await {
                         log::warn!("update handling failed: {e}");
                     }
                 }
@@ -75,14 +74,14 @@ async fn watcher_loop(st: SharedState, app: AppHandle) {
     }
 }
 
-fn spawn_sweeper(st: SharedState, app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
+fn spawn_sweeper(st: SharedState) {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(600)).await;
         loop {
             let client = st.client.read().await.clone();
             if let Some(client) = client {
                 if client.is_authorized().await.unwrap_or(false) {
-                    if let Err(e) = catchup_watched(&st, &client, &app).await {
+                    if let Err(e) = catchup_watched(&st, &client).await {
                         log::warn!("periodic sweep failed: {e}");
                     }
                 }
@@ -93,12 +92,7 @@ fn spawn_sweeper(st: SharedState, app: AppHandle) {
 }
 
 /// Enqueue downloads for videos posted in watched chats.
-async fn handle_update(
-    st: &SharedState,
-    _client: &Client,
-    app: &AppHandle,
-    update: Update,
-) -> Result<(), String> {
+async fn handle_update(st: &SharedState, _client: &Client, update: Update) -> Result<(), String> {
     let Update::NewMessage(msg) = update else {
         return Ok(());
     };
@@ -129,7 +123,7 @@ async fn handle_update(
     let msg_id = msg.id();
     let url = link_for_entry(&entry, msg_id);
     st.queue.enqueue(vec![url]).await;
-    let _ = app.emit("queue:pending", true);
+    st.bus.emit("queue:pending", serde_json::Value::Bool(true));
 
     // Advance the watch point and persist.
     let mut cfg = st.config.write().await;
@@ -145,11 +139,7 @@ async fn handle_update(
 }
 
 /// Enqueue videos newer than `last_msg_id` for every enabled watch entry.
-pub async fn catchup_watched(
-    st: &SharedState,
-    client: &Client,
-    app: &AppHandle,
-) -> Result<(), String> {
+pub async fn catchup_watched(st: &SharedState, client: &Client) -> Result<(), String> {
     let entries: Vec<crate::config::WatchEntry> = {
         let cfg = st.config.read().await;
         cfg.watched
@@ -214,8 +204,8 @@ pub async fn catchup_watched(
 
     if !all_urls.is_empty() {
         st.queue.enqueue(all_urls).await;
-        let _ = app.emit("queue:pending", true);
-        let _ = app.emit("watch:changed", true);
+        st.bus.emit("queue:pending", serde_json::Value::Bool(true));
+        st.bus.emit("watch:changed", serde_json::Value::Bool(true));
     }
     Ok(())
 }
