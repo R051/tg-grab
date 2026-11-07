@@ -1,13 +1,17 @@
-//! Download queue: pending jobs, workers, progress events.
+//! Download queue: pending jobs, workers, parallel chunked downloads, progress events.
 
 use crate::state::{ActiveTask, Job, SharedState};
 use crate::tg::links::{make_msg_link, parse_msg_link, sanitize_filename};
 use crate::tg::{client as tg_client, video_meta};
-use grammers_client::Client;
+use grammers_client::media::Downloadable;
+use grammers_client::{Client, InvocationError, tl};
+use grammers_session::Session;
 use serde::Serialize;
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 /// A finished (or failed) queue item, pushed to the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -52,7 +56,8 @@ fn friendly_error(err: &str) -> String {
     }
 }
 
-/// Spawn download workers (1 = sequential, gentlest; capped at 4).
+/// Spawn download workers (1 = sequential across files; each file itself
+/// downloads with 4 parallel chunk connections). Capped at 4.
 pub fn spawn_workers(st: SharedState, app: AppHandle) {
     let n = {
         let cfg = st.config.blocking_read();
@@ -167,85 +172,175 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult
     *st.queue.active.lock().await = Some(progress.clone());
     let _ = app.emit("queue:progress", &progress);
 
-    // Progress closure: update the shared snapshot and throttle UI emits.
-    let app_for_progress = app.clone();
-    let mut progress = progress.clone();
-    let mut last_emit = Instant::now() - Duration::from_secs(1);
-    let on_progress = &mut |current: u64, total: u64| {
-        progress.current = current;
-        progress.total = total;
-        progress.percent = if total > 0 {
-            (current as f64 / total as f64) * 100.0
-        } else {
-            0.0
-        };
-        if last_emit.elapsed() >= Duration::from_millis(200) {
-            last_emit = Instant::now();
-            let _ = app_for_progress.emit("queue:progress", &progress);
-        }
-    };
+    let done = Arc::new(AtomicU64::new(0));
+    let emitting = Arc::new(AtomicBool::new(true));
 
-    match download_to_file(&client, &media, &target, total, on_progress).await {
-        Ok(bytes) => {
-            progress.percent = 100.0;
-            progress.current = bytes;
-            *st.queue.active.lock().await = Some(progress);
-            TaskResult {
-                id: job.id,
-                url: job.url.clone(),
-                status: "success".into(),
-                name: Some(file_name),
-                size: Some(bytes),
-                cached: Some(false),
-                error: None,
-            }
+    // Progress emitter: polls the shared byte counter ~5x/sec.
+    let emit_st = st.clone();
+    let emit_app = app.clone();
+    let emit_done = done.clone();
+    let emit_flag = emitting.clone();
+    let mut emit_progress = progress;
+    tauri::async_runtime::spawn(async move {
+        while emit_flag.load(Ordering::Relaxed) {
+            let current = emit_done.load(Ordering::Relaxed);
+            emit_progress.current = current;
+            emit_progress.percent = if total > 0 {
+                (current as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            *emit_st.queue.active.lock().await = Some(emit_progress.clone());
+            let _ = emit_app.emit("queue:progress", &emit_progress);
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    });
+
+    let result = match download_parallel(st, &client, &media, &target, total, done).await {
+        Ok(()) => TaskResult {
+            id: job.id,
+            url: job.url.clone(),
+            status: "success".into(),
+            name: Some(file_name),
+            size: Some(total),
+            cached: Some(false),
+            error: None,
+        },
         Err(e) => {
             // Remove the partial file so a retry starts clean.
             let _ = std::fs::remove_file(&target);
-            fail_str(&e)
+            TaskResult::failed(job.id, &job.url, e)
         }
-    }
+    };
+    emitting.store(false, Ordering::Relaxed);
+    result
 }
 
-/// Chunked download with a progress callback (bytes_done, bytes_total).
-async fn download_to_file(
+/// Parallel download (mirrors grammers' own concurrent downloader): N workers
+/// each fetch 512 KiB chunks by offset via `upload.GetFile`; a writer task
+/// persists every chunk at its offset. Progress = shared byte counter.
+const PARALLEL_WORKERS: usize = 4;
+const CHUNK: i32 = 512 * 1024;
+const FILE_MIGRATE_ERROR: i32 = 303;
+
+async fn download_parallel(
+    st: &SharedState,
     client: &Client,
     media: &grammers_client::media::Media,
     target: &std::path::Path,
     total: u64,
-    on_progress: &mut impl FnMut(u64, u64),
-) -> Result<u64, String> {
-    use tokio::io::AsyncWriteExt;
+    done: Arc<AtomicU64>,
+) -> Result<(), String> {
+    let location = media.to_raw_input_location().ok_or("NOT_A_VIDEO")?;
+    let session = st.session.read().await.clone().ok_or("NOT_LOGGED_IN")?;
+    let home_dc = session.home_dc_id();
 
+    // Pre-allocate so workers can seek-write concurrently.
     let mut file = tokio::fs::File::create(target)
         .await
         .map_err(|e| format!("IO: {e}"))?;
-    let mut download = client.iter_download(media);
-    let mut done: u64 = 0;
+    file.set_len(total).await.map_err(|e| format!("IO: {e}"))?;
 
-    while let Some(chunk) = download
-        .next()
-        .await
-        .map_err(|e| friendly_error(&e.to_string()))?
-    {
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("IO: {e}"))?;
-        done += chunk.len() as u64;
-        on_progress(done, total);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>)>();
+    let next_part = Arc::new(tokio::sync::Mutex::new(0u64));
+
+    let mut tasks = Vec::new();
+    for _ in 0..PARALLEL_WORKERS {
+        let location = location.clone();
+        let tx = tx.clone();
+        let next_part = next_part.clone();
+        let client = client.clone();
+        let done = done.clone();
+        tasks.push(tauri::async_runtime::spawn(async move {
+            let mut dc = home_dc;
+            let mut retry_offset: Option<i64> = None;
+            loop {
+                // Claim the next chunk offset.
+                let offset: i64 = match retry_offset.take() {
+                    Some(o) => o,
+                    None => {
+                        let mut i = next_part.lock().await;
+                        *i += 1;
+                        (CHUNK as u64 * (*i - 1)) as i64
+                    }
+                };
+                if offset >= total as i64 {
+                    break;
+                }
+                let request = tl::functions::upload::GetFile {
+                    precise: true,
+                    cdn_supported: false,
+                    location: location.clone(),
+                    offset,
+                    limit: CHUNK,
+                };
+                match client.invoke_in_dc(dc, &request).await {
+                    Ok(tl::enums::upload::File::File(f)) => {
+                        let n = f.bytes.len() as u64;
+                        done.fetch_add(n, Ordering::Relaxed);
+                        if tx.send((offset as u64, f.bytes)).is_err() {
+                            break; // writer gone (abort/shutdown)
+                        }
+                        if n == 0 {
+                            break; // past-EOF safeguard
+                        }
+                    }
+                    Ok(tl::enums::upload::File::CdnRedirect(_)) => {
+                        return Err("CDN_REDIRECT".into());
+                    }
+                    Err(InvocationError::Rpc(err)) => {
+                        if err.code == FILE_MIGRATE_ERROR {
+                            dc = err.value.unwrap_or_default() as i32;
+                            retry_offset = Some(offset);
+                            continue;
+                        }
+                        return Err(err.name.clone());
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            Ok::<(), String>(())
+        }));
     }
-    file.flush().await.map_err(|e| format!("IO: {e}"))?;
+    drop(tx);
+
+    // Writer: place every chunk at its offset.
+    let mut pos: u64 = 0;
+    let mut write_err: Option<String> = None;
+    while let Some((offset, data)) = rx.recv().await {
+        if offset != pos {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| format!("IO: {e}"))?;
+        }
+        if let Err(e) = file.write_all(&data).await {
+            write_err = Some(format!("IO: {e}"));
+            break;
+        }
+        pos = offset + data.len() as u64;
+    }
+    let _ = file.sync_all().await;
     drop(file);
 
-    // Sanity check against the advertised size.
-    if total > 0 {
-        let local = std::fs::metadata(target).map(|m| m.len()).unwrap_or(0);
-        if local != total {
-            return Err(format!("SIZE_MISMATCH: {local} != {total}"));
+    // Propagate worker errors (writer error takes precedence).
+    for t in tasks {
+        match t.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) if write_err.is_none() => write_err = Some(e),
+            Err(e) if write_err.is_none() => write_err = Some(format!("JOIN: {e}")),
+            _ => {}
         }
     }
-    Ok(done)
+    if let Some(e) = write_err {
+        return Err(friendly_error(&e));
+    }
+
+    // Verify against the advertised size.
+    let local = std::fs::metadata(target).map(|m| m.len()).unwrap_or(0);
+    if total > 0 && local != total {
+        return Err(format!("SIZE_MISMATCH: {local} != {total}"));
+    }
+    Ok(())
 }
 
 /// Build the canonical link for a watched-channel message.
@@ -267,6 +362,3 @@ pub async fn snapshot(st: &SharedState) -> serde_json::Value {
         "results": results,
     })
 }
-
-#[allow(dead_code)]
-fn unused(_v: VecDeque<Job>) {}

@@ -7,7 +7,7 @@ use crate::tg::client::{ensure_client, logged_in_name, resolve_chat};
 use crate::tg::history::HistoryPage;
 use crate::tg::links::{make_msg_link, parse_chat_link};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 
 fn save(st: &SharedState, cfg: &Config) -> Result<(), String> {
