@@ -279,10 +279,11 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             if let Ok(j) = serde_json::from_slice::<PartJournal>(&bytes) {
                 if j.total == total && j.chunk == CHUNK {
                     let set: std::collections::HashSet<u64> = j.done.into_iter().collect();
-                    let resumed_bytes = (set.len() as u64) * (CHUNK as u64);
-                    if resumed_bytes < total {
+                    let bytes_already = (set.len() as u64) * (CHUNK as u64);
+                    if bytes_already < total {
                         usable = true;
                         resume_done = Some(set);
+                        resumed_bytes = bytes_already;
                     }
                 }
             }
@@ -496,6 +497,7 @@ async fn download_parallel(
     let mut write_err: Option<String> = None;
     let mut written: std::collections::HashSet<u64> = skip;
     let mut since_journal: u64 = 0;
+    log::info!("[writer] starting, resume chunks: {}", written.len());
     while let Some((offset, data, index)) = rx.recv().await {
         if offset != pos {
             file.seek(std::io::SeekFrom::Start(offset))
@@ -511,7 +513,13 @@ async fn download_parallel(
         since_journal += 1;
         if since_journal >= 8 {
             since_journal = 0;
+            let before = std::fs::metadata(journal_path).map(|m| m.len()).unwrap_or(0);
             write_journal(journal_path, total, &written);
+            let after = std::fs::metadata(journal_path).map(|m| m.len()).unwrap_or(0);
+            if after == before && after == 0 {
+                log::warn!("[writer] journal write produced no file!");
+            }
+            log::info!("[writer] {} chunks done, {} bytes", written.len(), pos);
         }
     }
     let _ = file.sync_all().await;
