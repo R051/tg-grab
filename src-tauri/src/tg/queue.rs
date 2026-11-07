@@ -7,6 +7,7 @@ use grammers_client::media::Downloadable;
 use grammers_client::{Client, InvocationError, tl};
 use grammers_session::Session;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,6 +55,40 @@ fn friendly_error(err: &str) -> String {
     } else {
         err.to_string()
     }
+}
+
+/// Mirror of grammers' crate-private `copy_auth_to_dc`: authorize our session
+/// key on a foreign DC (auth.ExportAuthorization on home + ImportAuthorization
+/// on the target) so the parallel workers can fetch chunks from it.
+async fn copy_auth_to_dc(
+    client: &Client,
+    target_dc: i32,
+    copied: Arc<std::sync::Mutex<HashSet<i32>>>,
+) -> Result<(), String> {
+    // NB: never hold the lock across an await (std::MutexGuard is !Send).
+    if copied.lock().unwrap().contains(&target_dc) {
+        return Ok(());
+    }
+    let exported = client
+        .invoke(&tl::functions::auth::ExportAuthorization { dc_id: target_dc })
+        .await
+        .map_err(|e| e.to_string())?;
+    let tl::enums::auth::ExportedAuthorization::Authorization(a) = exported
+    else {
+        return Err("unexpected auth.exportedAuthorization".into());
+    };
+    client
+        .invoke_in_dc(
+            target_dc,
+            &tl::functions::auth::ImportAuthorization {
+                id: a.id,
+                bytes: a.bytes,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    copied.lock().unwrap().insert(target_dc);
+    Ok(())
 }
 
 /// Spawn download workers (1 = sequential across files; each file itself
@@ -243,6 +278,7 @@ async fn download_parallel(
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>)>();
     let next_part = Arc::new(tokio::sync::Mutex::new(0u64));
+    let auth_copied: Arc<std::sync::Mutex<HashSet<i32>>> = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     let mut tasks = Vec::new();
     for _ in 0..PARALLEL_WORKERS {
@@ -251,6 +287,7 @@ async fn download_parallel(
         let next_part = next_part.clone();
         let client = client.clone();
         let done = done.clone();
+        let auth_copied = auth_copied.clone();
         tasks.push(tauri::async_runtime::spawn(async move {
             let mut dc = home_dc;
             let mut retry_offset: Option<i64> = None;
@@ -293,6 +330,16 @@ async fn download_parallel(
                             dc = err.value.unwrap_or_default() as i32;
                             retry_offset = Some(offset);
                             continue;
+                        }
+                        if err.name == "AUTH_KEY_UNREGISTERED" {
+                            // Session key not authorized on this DC yet — export/import it.
+                            match copy_auth_to_dc(&client, dc, auth_copied.clone()).await {
+                                Ok(()) => {
+                                    retry_offset = Some(offset);
+                                    continue;
+                                }
+                                Err(e) => return Err(format!("AUTH_COPY: {e}")),
+                            }
                         }
                         return Err(err.name.clone());
                     }
