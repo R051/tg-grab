@@ -6,13 +6,15 @@
 //! on first run and printed to the console).
 
 use axum::{
+    body::Body,
     extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade, ws::Message},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -205,29 +207,94 @@ async fn forward_events(
     }
 }
 
-/// Serve a downloaded file inline (browser can play/download it).
-async fn file_handler(State(st): State<St>, Path(name): Path<String>) -> Response {
-    let safe = std::path::Path::new(&name)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let path = st.downloads_dir.join(&safe);
-    match tokio::fs::metadata(&path).await {
-        Ok(meta) if meta.is_file() => {
-            match tokio::fs::read(&path).await {
-                Ok(bytes) => {
-                    let mime = if name.to_lowercase().ends_with(".mp4") {
-                        "video/mp4"
-                    } else {
-                        "application/octet-stream"
-                    };
-                    ([( "content-type", mime )], bytes).into_response()
+/// Serve a downloaded file with Range support (streaming, seek-friendly).
+async fn file_handler(
+    State(st): State<St>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    // Reject traversal, then resolve under downloads_dir.
+    if path.split('\\').chain(path.split('/')).any(|seg| seg == "..") {
+        return (StatusCode::BAD_REQUEST, "BAD_PATH").into_response();
+    }
+    let full = st.downloads_dir.join(&path);
+    let meta = match tokio::fs::metadata(&full).await {
+        Ok(m) if m.is_file() => m,
+        _ => return (StatusCode::NOT_FOUND, "NOT_FOUND").into_response(),
+    };
+    let size = meta.len();
+    let mime = if path.to_lowercase().ends_with(".mp4") {
+        "video/mp4"
+    } else {
+        "application/octet-stream"
+    };
+
+    // Single-range support (suffix "bytes=-N" also handled).
+    let mut start: u64 = 0;
+    let mut end: u64 = size.saturating_sub(1);
+    let mut partial = false;
+    if let Some(range) = headers
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok())
+    {
+        if let Some(spec) = range.strip_prefix("bytes=") {
+            let mut it = spec.splitn(2, '-');
+            let first = it.next().unwrap_or("");
+            let last = it.next().unwrap_or("");
+            if first.is_empty() {
+                // bytes=-N : final N bytes
+                if let Ok(n) = last.parse::<u64>() {
+                    let n = n.min(size);
+                    start = size - n;
+                    end = size.saturating_sub(1);
+                    partial = true;
                 }
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            } else if let Ok(s) = first.parse::<u64>() {
+                start = s.min(size);
+                end = if last.is_empty() {
+                    size.saturating_sub(1)
+                } else {
+                    last.parse::<u64>().unwrap_or(size - 1).min(size.saturating_sub(1))
+                };
+                if start > end {
+                    return (
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        [("content-range", format!("bytes */{size}"))],
+                    )
+                        .into_response();
+                }
+                partial = true;
             }
         }
-        _ => (StatusCode::NOT_FOUND, "NOT_FOUND").into_response(),
     }
+    let len = end - start + 1;
+
+    let mut f = match tokio::fs::File::open(&full).await {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if start > 0 {
+        use std::io::SeekFrom;
+        if f.seek(SeekFrom::Start(start)).await.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "seek failed").into_response();
+        }
+    }
+    use tokio::io::AsyncReadExt as _;
+    let mut buf = vec![0u8; len as usize];
+    if let Err(e) = f.read_exact(&mut buf).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    let mut resp = (StatusCode::OK, [(header::CONTENT_TYPE, mime)], buf).into_response();
+    if partial {
+        resp.headers_mut().insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{size}")
+                .parse()
+                .unwrap(),
+        );
+    }
+    resp
 }
 
 /// Bearer/query token auth for /api, /ws and /files.
@@ -319,7 +386,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/invoke/{cmd}", post(invoke_handler))
         .route("/ws", get(ws_handler))
-        .route("/files/{name}", get(file_handler))
+        .route("/files/{*path}", get(file_handler))
         .layer(middleware::from_fn_with_state(st.clone(), auth_mw))
         .fallback_service(spa)
         .with_state(st);

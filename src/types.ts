@@ -26,6 +26,7 @@ export interface TaskResult {
   url: string;
   status: "success" | "failed";
   name?: string;
+  path?: string;
   size?: number;
   cached?: boolean;
   error?: string;

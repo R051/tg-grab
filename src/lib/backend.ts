@@ -69,10 +69,18 @@ function ensureWs() {
     };
     ws.onclose = () => {
       ws = null;
-      window.setTimeout(connect, 3000);
+      window.setTimeout(() => {
+        connect();
+        onReconnectFn?.();
+      }, 3000);
     };
     ws.onerror = () => ws?.close();
   }
+}
+
+let onReconnectFn: (() => void) | null = null;
+export function onReconnect(fn: () => void) {
+  onReconnectFn = fn;
 }
 
 export function on(event: string, handler: Handler): void {

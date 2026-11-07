@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "../lib/backend";
 import {
@@ -14,6 +14,7 @@ import {
   useMessage,
 } from "naive-ui";
 import { useAppStore } from "../stores/app";
+import { setLocale } from "../i18n";
 
 const { t } = useI18n();
 const store = useAppStore();
@@ -49,16 +50,24 @@ const langOptions = [
   { label: "English", value: "en" },
 ];
 
-onMounted(() => {
-  const s = store.settings;
-  if (s) {
+// Form starts blank; sync once the store's async settings arrive — but
+// never overwrite fields the user has already touched.
+const touched = ref(false);
+watch(
+  () => store.settings,
+  (s) => {
+    if (!s || touched.value) return;
     apiId.value = s.api_id?.toString() ?? "";
     apiHash.value = s.api_hash ?? "";
     proxyUrl.value = s.proxy_url ?? "";
     concurrency.value = s.concurrency;
     lang.value = s.lang;
-  }
-});
+  },
+  { immediate: true, deep: false },
+);
+function markTouched() {
+  touched.value = true;
+}
 
 watch(
   () => store.status?.authorized,
@@ -108,6 +117,19 @@ async function saveProxy() {
   }
 }
 
+async function resendCode() {
+  if (!phone.value.trim()) return;
+  loggingIn.value = true;
+  try {
+    await invoke("auth_send_code", { phone: phone.value.trim() });
+    message.success(t("settings.login.codeSent"));
+  } catch (e) {
+    message.error(errText(e), msgOpts);
+  } finally {
+    loggingIn.value = false;
+  }
+}
+
 async function sendCode() {
   if (!phone.value.trim()) return;
   loggingIn.value = true;
@@ -130,11 +152,13 @@ async function verifyCode() {
       "auth_sign_in",
       { code: code.value.trim() },
     );
-    if (r.status === "Ok") {
+    if (r.status === "ok") {
       message.success(t("settings.login.loginSuccess"));
       step.value = "phone";
+      code.value = "";
       await store.refreshStatus();
     } else {
+      // need_password
       pwHint.value = r.hint ?? null;
       step.value = "password";
     }
@@ -175,8 +199,8 @@ async function clearThumbs() {
   if (!window.confirm(t("settings.prefs.clearThumbsConfirm"))) return;
   clearingThumbs.value = true;
   try {
-    const freed = await invoke<number>("clear_thumbs");
-    message.success(t("settings.prefs.thumbsCleared", { mb: (freed / 1048576).toFixed(1) }));
+    const r = await invoke<{ freed: number }>("clear_thumbs");
+    message.success(t("settings.prefs.thumbsCleared", { mb: ((r.freed ?? 0) / 1048576).toFixed(1) }));
   } catch (e) {
     message.error(String(e));
   } finally {
@@ -190,6 +214,7 @@ async function savePrefs() {
       concurrency: concurrency.value,
       lang: lang.value,
     });
+    setLocale(lang.value as "zh-CN" | "en");
     message.success(t("settings.prefs.saved"));
     await store.refreshSettings();
   } catch (e) {
@@ -243,10 +268,10 @@ function errText(e: unknown): string {
       <p class="desc">{{ t("settings.api.desc") }}</p>
       <n-form label-placement="top" size="small">
         <n-form-item :label="t('settings.api.apiId')">
-          <n-input v-model:value="apiId" placeholder="e.g. 12345678" />
+          <n-input v-model:value="apiId" placeholder="e.g. 12345678" @update:value="markTouched" />
         </n-form-item>
         <n-form-item :label="t('settings.api.apiHash')">
-          <n-input v-model:value="apiHash" placeholder="0123456789abcdef0123456789abcdef" show-password-on="click" />
+          <n-input v-model:value="apiHash" placeholder="0123456789abcdef0123456789abcdef" show-password-on="click" @update:value="markTouched" />
         </n-form-item>
       </n-form>
       <n-button type="primary" size="small" :loading="savingApi" @click="saveApi">
@@ -303,6 +328,24 @@ function errText(e: unknown): string {
             @click="verifyCode"
           >
             {{ t("settings.login.verify") }}
+          </n-button>
+          <n-button
+            v-if="step === 'code'"
+            quaternary
+            size="small"
+            :disabled="loggingIn"
+            @click="resendCode"
+          >
+            {{ t("settings.login.resend") }}
+          </n-button>
+          <n-button
+            v-if="step === 'code'"
+            quaternary
+            size="small"
+            :disabled="loggingIn"
+            @click="step = 'phone'"
+          >
+            {{ t("settings.login.changePhone") }}
           </n-button>
           <n-button
             v-else

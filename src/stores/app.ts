@@ -1,6 +1,5 @@
 import { defineStore } from "pinia";
-import { invoke } from "../lib/backend";
-import { on } from "../lib/backend";
+import { invoke, on, onReconnect } from "../lib/backend";
 import type {
   ActiveTask,
   AppSettings,
@@ -11,7 +10,8 @@ import type {
   WatchEntry,
 } from "../types";
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
+let queueSeq = 0;
 
 export const useAppStore = defineStore("app", {
   state: () => ({
@@ -38,7 +38,11 @@ export const useAppStore = defineStore("app", {
       this.settings = await invoke<AppSettings>("get_settings");
     },
     async refreshQueue() {
+      // Single-flight with stale-response discard: parallel calls never
+      // overwrite newer state with an older snapshot.
+      const seq = ++queueSeq;
       const q = await invoke<QueueSnapshot>("get_queue");
+      if (seq !== queueSeq) return;
       this.pending = q.pending;
       this.active = q.active;
       this.results = q.results;
@@ -54,11 +58,19 @@ export const useAppStore = defineStore("app", {
       this.watched = await invoke<WatchEntry[]>("watch_list");
     },
     async init() {
-      if (initialized) return;
-      initialized = true;
-      await Promise.all([this.refreshStatus(), this.refreshSettings(), this.refreshWatched()]);
-      await this.refreshQueue().catch(() => undefined);
-      await this.refreshFiles().catch(() => undefined);
+      if (initPromise) return initPromise;
+      initPromise = (async () => {
+        await Promise.all([this.refreshStatus(), this.refreshSettings(), this.refreshWatched()]);
+        await this.refreshQueue().catch(() => undefined);
+        await this.refreshFiles().catch(() => undefined);
+      })();
+      try {
+        await initPromise;
+      } catch (e) {
+        // Allow a retry on the next call (e.g. server came back).
+        initPromise = null;
+        throw e;
+      }
 
       on("queue:progress", (p) => {
         const a = p as ActiveTask;
@@ -96,6 +108,12 @@ export const useAppStore = defineStore("app", {
       });
       on("auth:changed", () => {
         void this.refreshStatus();
+      });
+      // WebSocket reconnected: resync everything that may have changed.
+      onReconnect(() => {
+        void this.refreshQueue().catch(() => undefined);
+        void this.refreshStatus().catch(() => undefined);
+        void this.refreshFiles().catch(() => undefined);
       });
     },
   },

@@ -23,6 +23,9 @@ pub struct TaskResult {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Path relative to downloads_dir (may contain <channel>/<date> segments).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +41,7 @@ impl TaskResult {
             url: url.to_string(),
             status: "failed".into(),
             name: None,
+            path: None,
             size: None,
             cached: None,
             error: Some(error.into()),
@@ -277,11 +281,17 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
     while target.exists() {
         let local = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         if total > 0 && local == total {
+            let rel = target
+                .strip_prefix(&st.downloads_dir)
+                .unwrap_or(target.as_path())
+                .to_string_lossy()
+                .to_string();
             return TaskResult {
                 id: job.id,
                 url: job.url.clone(),
                 status: "success".into(),
-                name: Some(file_name),
+                name: Some(rel.clone()),
+                path: Some(rel),
                 size: Some(local),
                 cached: Some(true),
                 error: None,
@@ -378,15 +388,23 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
 
     let result = match download_parallel(st, &client, &media, &part_path, total, done, resume_done, &journal_path, job.id).await {
         Ok(()) => match tokio::fs::rename(&part_path, &target).await {
-            Ok(()) => TaskResult {
-                id: job.id,
-                url: job.url.clone(),
-                status: "success".into(),
-                name: Some(file_name),
-                size: Some(total),
-                cached: Some(false),
-                error: None,
-            },
+            Ok(()) => {
+                let rel = target
+                    .strip_prefix(&st.downloads_dir)
+                    .unwrap_or(target.as_path())
+                    .to_string_lossy()
+                    .to_string();
+                TaskResult {
+                    id: job.id,
+                    url: job.url.clone(),
+                    status: "success".into(),
+                    name: Some(rel.clone()),
+                    path: Some(rel),
+                    size: Some(total),
+                    cached: Some(false),
+                    error: None,
+                }
+            }
             Err(e) => TaskResult::failed(job.id, &job.url, e.to_string()),
         },
         Err(e) => {

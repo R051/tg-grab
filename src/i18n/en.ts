@@ -38,6 +38,8 @@ export default {
       submitPassword: "Submit",
       loginSuccess: "Signed in!",
       needPhoneFirst: "Send the code first",
+      resend: "Resend code",
+      changePhone: "Change number",
       needApiFirst: "Fill in the API credentials above and save before signing in",
     },
     prefs: {
@@ -117,6 +119,7 @@ export default {
     browse: "Browse",
     loadMore: "Load more",
     loadPrevDay: "Load previous day",
+    searchingDay: "Searching: {day}…",
     selectAll: "Select page",
     pickDate: "Filter by date",
     filteredDay: "Filtered: {day}",

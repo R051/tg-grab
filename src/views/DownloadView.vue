@@ -47,6 +47,7 @@ interface Row {
   id: number;
   url: string;
   name?: string;
+  path?: string;
   size?: number;
   cached?: boolean;
   error?: string;
@@ -74,6 +75,7 @@ const taskRowsRaw = computed<Row[]>(() => {
       id: r.id,
       url: r.url,
       name: r.name,
+      path: r.path,
       size: r.size,
       error: r.error,
     });
@@ -345,9 +347,9 @@ import { fileUrl, isDesktop } from "../lib/backend";
           <button class="ghost-btn row-action danger" @click="cancelTask(row)">✕</button>
         </template>
         <button
-          v-if="(row.kind === 'success' || row.kind === 'cached') && row.name"
+          v-if="(row.kind === 'success' || row.kind === 'cached') && (row.path || row.name)"
           class="ghost-btn row-action"
-          @click="openFile(row.name)"
+          @click="openFile(row.path || row.name!)"
         >
           ⤓
         </button>

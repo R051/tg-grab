@@ -20,8 +20,14 @@ const exhausted = ref(false);
 const selected = ref<Set<string>>(new Set());
 const recents = ref<WatchEntry[]>([]);
 const dateFilter = ref<number | null>(null); // ms timestamp of picked day
-const thumbs = ref<Record<number, string>>({});
+const thumbs = ref<Record<string, string>>({}); // key: rawId_msgId
 const thumbsLoading = ref(false);
+const chatRawId = ref(0);
+const searchingDay = ref<string | null>(null);
+// Monotonic request sequence: stale responses are discarded.
+let browseSeq = 0;
+let thumbSeq = 0;
+const MAX_EMPTY_DAYS = 60;
 void refreshRecents();
 
 interface DayGroup {
@@ -91,29 +97,34 @@ async function removeRecent(entry: WatchEntry) {
 
 async function browse() {
   if (!link.value.trim()) return;
+  const seq = ++browseSeq;
+  const frozenLink = link.value.trim();
+  const frozenDay = pickedDay();
   browsing.value = true;
   try {
     const page = await invoke<HistoryPage>("history_page", {
-      link: link.value.trim(),
+      link: frozenLink,
       offsetId: 0,
-      date: pickedDay(),
+      date: frozenDay,
     });
+    if (seq !== browseSeq) return; // stale response — a newer query won
     chatTitle.value = page.chat.title;
+    chatRawId.value = page.chat.rawId;
     videos.value = page.videos;
     selected.value = new Set();
     thumbs.value = {};
     exhausted.value = false;
     void refreshRecents();
-    void loadThumbs();
+    void loadThumbs(frozenLink, page.chat.rawId);
     if (page.videos.length) {
       message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
     } else {
       message.warning(t("history.empty"));
     }
   } catch (e) {
-    message.error(String(e));
+    if (seq === browseSeq) message.error(String(e));
   } finally {
-    browsing.value = false;
+    if (seq === browseSeq) browsing.value = false;
   }
 }
 
@@ -143,62 +154,86 @@ function shiftDay(day: string, delta: number): string {
 /// Walks back past empty days (up to 3) before declaring exhausted.
 async function loadPrevDay() {
   if (browsing.value) return;
+  const seq = ++browseSeq;
+  const frozenLink = link.value.trim();
   const days = videos.value.map(dayKeyOf).filter(Boolean) as string[];
   if (!days.length) return;
   const oldest = days.sort()[0];
   let target = shiftDay(oldest, -1);
   const seen = new Set(videos.value.map((v) => v.msgId));
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < MAX_EMPTY_DAYS; attempt++) {
     browsing.value = true;
+    searchingDay.value = target;
     let page: HistoryPage;
     try {
       page = await invoke<HistoryPage>("history_page", {
-        link: link.value.trim(),
+        link: frozenLink,
         offsetId: 0,
         date: target,
       });
     } catch (e) {
       message.error(String(e));
       browsing.value = false;
+      searchingDay.value = null;
       return;
     }
-    browsing.value = false;
+    if (seq !== browseSeq) return; // superseded
 
     const fresh = page.videos.filter((v) => !seen.has(v.msgId));
     if (fresh.length) {
+      if (!chatRawId.value) chatRawId.value = page.chat.rawId;
       videos.value = [...videos.value, ...fresh];
-      void loadThumbs();
+      void loadThumbs(frozenLink, page.chat.rawId);
       exhausted.value = false;
+      searchingDay.value = null;
+      browsing.value = false;
       return;
     }
     target = shiftDay(target, -1);
   }
+  browsing.value = false;
+  searchingDay.value = null;
   exhausted.value = true;
 }
 
-async function loadThumbs() {
+async function loadThumbs(frozenLink?: string, rawId?: number) {
   if (thumbsLoading.value) return;
+  const seq = ++thumbSeq;
+  const useLink = frozenLink ?? link.value.trim();
+  if (!useLink) return;
+  const channelRaw = rawId ?? chatRawId.value;
   const need = videos.value
-    .filter((v) => v.hasThumb && !thumbs.value[v.msgId])
+    .filter((v) => v.hasThumb && !thumbs.value[channelRaw + "_" + v.msgId])
     .map((v) => v.msgId);
-  if (!need.length || !link.value.trim()) return;
+  if (!need.length) return;
   thumbsLoading.value = true;
   try {
     const list = await invoke<{ msgId: number; data: string }[]>("history_thumbs", {
-      link: link.value.trim(),
+      link: useLink,
       msgIds: need,
     });
+    if (seq !== thumbSeq) return; // stale
     const next = { ...thumbs.value };
     for (const item of list) {
-      next[item.msgId] = "data:image/jpeg;base64," + item.data;
+      next[channelRaw + "_" + item.msgId] = "data:image/jpeg;base64," + item.data;
+    }
+    // Cap the in-memory cache to ~300 entries (drop oldest first).
+    const keys = Object.keys(next);
+    if (keys.length > 300) {
+      for (const k of keys.slice(0, keys.length - 300)) delete next[k];
     }
     thumbs.value = next;
   } catch {
     /* thumbs are decorative — ignore failures */
   } finally {
-    thumbsLoading.value = false;
+    if (seq === thumbSeq) thumbsLoading.value = false;
   }
+}
+
+function thumbKey(v: VideoInfo): string {
+  // key by channel+msg so switching channels cannot reuse stale images
+  return chatRawId.value + "_" + v.msgId;
 }
 
 function isSelected(v: VideoInfo): boolean {
@@ -303,9 +338,9 @@ async function downloadSelected() {
         >
           <div class="thumb-wrap">
             <img
-              v-if="thumbs[v.msgId]"
+              v-if="thumbs[thumbKey(v)]"
               class="thumb"
-              :src="thumbs[v.msgId]"
+              :src="thumbs[thumbKey(v)]"
               alt=""
               loading="lazy"
             />
@@ -336,7 +371,7 @@ async function downloadSelected() {
         {{ t("history.downloadSelected", { n: selected.size }) }}
       </n-button>
       <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="loadPrevDay">
-        {{ t("history.loadPrevDay") }}
+        {{ searchingDay ? t("history.searchingDay", { day: searchingDay }) : t("history.loadPrevDay") }}
       </n-button>
       <label class="selall">
         <input

@@ -40,6 +40,8 @@ export default {
       submitPassword: "提交密码",
       loginSuccess: "登录成功！",
       needPhoneFirst: "请先发送验证码",
+      resend: "重新发送",
+      changePhone: "修改手机号",
       needApiFirst: "请先在上方填写 API 凭证并保存，再登录",
     },
     prefs: {
@@ -119,6 +121,7 @@ export default {
     browse: "浏览视频",
     loadMore: "加载更多",
     loadPrevDay: "加载前一天",
+    searchingDay: "搜索中：{day}…",
     selectAll: "全选本页",
     pickDate: "按日期筛选",
     filteredDay: "已筛选：{day}",
