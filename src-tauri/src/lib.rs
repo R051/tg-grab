@@ -32,6 +32,9 @@ pub fn run() {
             commands::watch_catchup,
             commands::history_page,
             commands::history_thumbs,
+            commands::history_recent,
+            commands::history_recent_remove,
+            commands::history_thumbs,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;

@@ -31,6 +31,7 @@ log = "0.4"
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }
 grammers-session = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }
 grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e", features = ["proxy"] }
+chrono = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

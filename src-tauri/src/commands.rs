@@ -419,10 +419,58 @@ pub async fn history_page(
     st: State<'_, SharedState>,
     link: String,
     offset_id: i32,
+    date: Option<String>,
 ) -> Result<HistoryPage, String> {
     let client = ensure_client(&st).await?;
     if !client.is_authorized().await.unwrap_or(false) {
         return Err("NOT_LOGGED_IN".into());
     }
-    crate::tg::history::browse(&st, &client, &link, offset_id).await
+    let page = crate::tg::history::browse(&st, &client, &link, offset_id, date).await?;
+
+    // Auto-remember the channel for the history page's quick chips.
+    if page.chat.raw_id != 0 && offset_id == 0 {
+        let mut cfg = st.config.write().await;
+        if !cfg.recent.iter().any(|w| w.raw_id == page.chat.raw_id) {
+            let entry = WatchEntry {
+                chat_id: 0,
+                raw_id: page.chat.raw_id,
+                access_hash: 0,
+                title: page.chat.title.clone(),
+                username: crate::tg::links::parse_chat_link(&link)
+                    .ok()
+                    .and_then(|l| match l {
+                        crate::tg::links::ChatLink::Username(u) => Some(u),
+                        _ => None,
+                    }),
+                enabled: false,
+                last_msg_id: 0,
+            };
+            cfg.recent.insert(0, entry);
+            let len = cfg.recent.len();
+            if len > 12 {
+                cfg.recent.truncate(12);
+            }
+            let snapshot = cfg.clone();
+            drop(cfg);
+            let _ = snapshot.save(&st.config_path);
+        }
+    }
+    Ok(page)
+}
+
+/// Recently browsed channels (history page quick chips).
+#[tauri::command]
+pub async fn history_recent(st: State<'_, SharedState>) -> Result<Vec<WatchEntry>, String> {
+    Ok(st.config.read().await.recent.clone())
+}
+
+/// Remove one channel from the history quick chips.
+#[tauri::command]
+pub async fn history_recent_remove(
+    st: State<'_, SharedState>,
+    raw_id: i64,
+) -> Result<(), String> {
+    let mut cfg = st.config.write().await;
+    cfg.recent.retain(|w| w.raw_id != raw_id);
+    save(&st, &cfg)
 }

@@ -3,6 +3,7 @@
 use crate::tg::client::resolve_chat;
 use crate::tg::links::{make_msg_link, parse_chat_link, sanitize_filename};
 use crate::tg::links::ChatLink;
+use chrono::{Local, Utc};
 use grammers_client::media::Downloadable;
 use grammers_client::message::Message;
 use grammers_client::Client;
@@ -48,38 +49,73 @@ const PAGE_VIDEOS: usize = 20;
 const MAX_SCAN: usize = 300;
 
 /// Browse one page of a channel's video history.
+///
+/// `date` (local "YYYY-MM-DD") jumps straight to that day via the server's
+/// max_date bound and collects every video posted within the day.
 pub async fn browse(
     st: &crate::state::Inner,
     client: &Client,
     link: &str,
     offset_id: i32,
+    date: Option<String>,
 ) -> Result<HistoryPage, String> {
     let chat_link: ChatLink = parse_chat_link(link)?;
     let rc = resolve_chat(st, client, &chat_link).await?;
     let identity = &rc.identity;
+
+    // Optional local-day window [start, end) as UTC.
+    let (day_start, day_end) = match &date {
+        Some(day) => {
+            let d = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .map_err(|_| "INVALID_DATE".to_string())?;
+            use chrono::TimeZone;
+            let start = Local
+                .from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
+                .single()
+                .ok_or("INVALID_DATE".to_string())?;
+            let end = Local
+                .from_local_datetime(&d.and_hms_opt(23, 59, 59).unwrap())
+                .single()
+                .ok_or("INVALID_DATE".to_string())?;
+            (Some(start.with_timezone(&Utc)), Some(end.with_timezone(&Utc)))
+        }
+        None => (None, None),
+    };
+
+    let page_cap = if day_start.is_some() { 60 } else { PAGE_VIDEOS };
+    let scan_cap = if day_start.is_some() { 600 } else { MAX_SCAN };
 
     let mut videos: Vec<VideoInfo> = Vec::new();
     let mut scanned = 0usize;
     let mut last_id = offset_id;
     let mut finished = true;
 
-    let mut messages = client.iter_messages(rc.peer).offset_id(offset_id);
+    let mut messages = client
+        .iter_messages(rc.peer)
+        .offset_id(offset_id)
+        .max_date(day_end.map(|e| e.timestamp() as i32).unwrap_or(0));
     loop {
         let Some(msg) = messages.next().await.map_err(|e| e.to_string())? else {
             break;
         };
         scanned += 1;
         last_id = msg.id();
+        // Newest → oldest: stop once we leave the requested day.
+        if let Some(start) = day_start {
+            if msg.date() < start {
+                break;
+            }
+        }
         if let Some(info) =
             video_entry(st, &msg, identity.username.as_deref(), identity.raw_id)
         {
             videos.push(info);
-            if videos.len() >= PAGE_VIDEOS {
-                finished = false;
+            if videos.len() >= page_cap {
+                finished = day_start.is_none();
                 break;
             }
         }
-        if scanned >= MAX_SCAN {
+        if scanned >= scan_cap {
             finished = false;
             break;
         }

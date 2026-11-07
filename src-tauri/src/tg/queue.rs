@@ -169,17 +169,20 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult
         None => return fail_str("NOT_A_VIDEO"),
     };
 
-    let file_name = sanitize_filename(
+    let mut file_name = sanitize_filename(
         &meta
             .name
             .clone()
             .unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
     );
-    let target = st.downloads_dir.join(&file_name);
+    let mut target = st.downloads_dir.join(&file_name);
     let total = meta.size;
 
-    // Skip complete files; delete corrupt leftovers from interrupted runs.
-    if target.exists() {
+    // Skip complete files; on a same-name/size-mismatch collision (channels
+    // reuse names like proc_0.mp4) suffix with the message id instead of
+    // overwriting the earlier download.
+    let mut attempts = 0;
+    while target.exists() {
         let local = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         if total > 0 && local == total {
             return TaskResult {
@@ -192,7 +195,22 @@ async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult
                 error: None,
             };
         }
-        let _ = std::fs::remove_file(&target);
+        attempts += 1;
+        if attempts > 1 {
+            let _ = std::fs::remove_file(&target);
+            break;
+        }
+        let p = std::path::Path::new(&file_name);
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_name.clone());
+        let ext = p
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        file_name = format!("{stem}_{msg_id}{ext}");
+        target = st.downloads_dir.join(&file_name);
     }
 
     // Publish the active task before starting so the UI can show the name.

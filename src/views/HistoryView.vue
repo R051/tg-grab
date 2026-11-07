@@ -2,10 +2,10 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
-import { NButton, NInput, useMessage } from "naive-ui";
+import { NButton, NDatePicker, NInput, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import AppIcon from "../components/AppIcon.vue";
-import type { HistoryPage, VideoInfo } from "../types";
+import type { HistoryPage, VideoInfo, WatchEntry } from "../types";
 
 const { t, locale } = useI18n();
 const store = useAppStore();
@@ -19,8 +19,11 @@ const videos = ref<VideoInfo[]>([]);
 const nextOffset = ref(0);
 const exhausted = ref(true);
 const selected = ref<Set<string>>(new Set());
+const recents = ref<WatchEntry[]>([]);
+const dateFilter = ref<number | null>(null); // ms timestamp of picked day
 const thumbs = ref<Record<number, string>>({});
 const thumbsLoading = ref(false);
+void refreshRecents();
 
 interface DayGroup {
   key: string;
@@ -125,6 +128,29 @@ function toggleSelectAll(ev: Event) {
   selected.value = next;
 }
 
+function pickedDay(): string | null {
+  if (!dateFilter.value) return null;
+  const d = new Date(dateFilter.value);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+async function refreshRecents() {
+  recents.value = await invoke<WatchEntry[]>("history_recent").catch(() => []);
+}
+
+function browseRecent(entry: WatchEntry) {
+  const linkStr = entry.username ? `https://t.me/${entry.username}` : `https://t.me/c/${entry.raw_id}`;
+  link.value = linkStr;
+  dateFilter.value = null;
+  void browse(false);
+}
+
+async function removeRecent(entry: WatchEntry) {
+  await invoke("history_recent_remove", { rawId: entry.raw_id }).catch(() => undefined);
+  await refreshRecents();
+}
+
 async function browse(more: boolean) {
   if (!link.value.trim()) return;
   browsing.value = true;
@@ -132,7 +158,9 @@ async function browse(more: boolean) {
     const page = await invoke<HistoryPage>("history_page", {
       link: link.value.trim(),
       offsetId: more ? nextOffset.value : 0,
+      date: pickedDay(),
     });
+    if (!more) await refreshRecents();
     chatTitle.value = page.chat.title;
     videos.value = more ? [...videos.value, ...page.videos] : page.videos;
     nextOffset.value = page.nextOffset;
@@ -181,9 +209,24 @@ async function downloadSelected() {
         size="small"
         @keyup.enter="browse(false)"
       />
+      <n-date-picker
+        v-model:value="dateFilter"
+        type="date"
+        size="small"
+        clearable
+        :placeholder="t('history.pickDate')"
+        style="width: 150px"
+      />
       <n-button type="primary" size="small" :loading="browsing" @click="browse(false)">
         {{ t("history.browse") }}
       </n-button>
+    </div>
+    <div v-if="recents.length" class="recents">
+      <span class="recents-label">{{ t("history.recent") }}</span>
+      <span v-for="r in recents" :key="r.raw_id" class="recent-chip">
+        <button class="chip-btn" @click="browseRecent(r)">{{ r.title }}</button>
+        <button class="chip-x" @click.stop="removeRecent(r)">✕</button>
+      </span>
     </div>
   </div>
 
@@ -239,9 +282,12 @@ async function downloadSelected() {
       >
         {{ t("history.downloadSelected", { n: selected.size }) }}
       </n-button>
-      <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="browse(true)">
+      <n-button v-if="!exhausted && !dateFilter" quaternary size="small" :loading="browsing" @click="browse(true)">
         {{ t("history.loadMore") }}
       </n-button>
+      <n-text v-if="dateFilter" depth="3" style="font-size: 12px">
+        {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
+      </n-text>
       <label class="selall">
         <input
           type="checkbox"
@@ -264,6 +310,20 @@ async function downloadSelected() {
 
 <style scoped>
 .row { display: flex; align-items: center; gap: 10px; }
+.recents { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.recents-label { font-size: 11.5px; color: var(--text-faint); }
+.recent-chip { display: inline-flex; align-items: center; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.chip-btn {
+  background: none; border: 0; color: var(--text-dim); font-size: 12px;
+  padding: 4px 6px 4px 10px; cursor: pointer; font-family: inherit;
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip-btn:hover { color: var(--accent-bright); }
+.chip-x {
+  background: none; border: 0; color: var(--text-faint); font-size: 10px;
+  padding: 4px 8px 4px 2px; cursor: pointer;
+}
+.chip-x:hover { color: var(--red); }
 .actions { margin-top: 12px; }
 .chat-name { color: var(--text); }
 .selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }

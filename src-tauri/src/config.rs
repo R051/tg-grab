@@ -41,6 +41,9 @@ pub struct Config {
     pub concurrency: usize,
     #[serde(default)]
     pub watched: Vec<WatchEntry>,
+    /// Recently browsed channels for the history page (auto-remembered).
+    #[serde(default)]
+    pub recent: Vec<WatchEntry>,
     /// UI language: "zh-CN" | "en".
     #[serde(default = "default_lang")]
     pub lang: String,
