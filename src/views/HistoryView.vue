@@ -128,19 +128,6 @@ function dayKeyOf(v: VideoInfo): string | null {
   }
 }
 
-function dayLabel(day: string): string {
-  // display in the active locale style
-  try {
-    return new Date(day + "T00:00:00").toLocaleDateString(locale.value, {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-  } catch {
-    return day;
-  }
-}
-
 function shiftDay(day: string, delta: number): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
   if (!m) return day;
@@ -305,7 +292,7 @@ async function downloadSelected() {
     </div>
     <div class="grid">
       <template v-for="g in grouped" :key="g.key">
-        <div class="day-divider">{{ dayLabel(g.key) }}</div>
+        <div class="day-divider">{{ g.key }}</div>
         <div
           v-for="v in g.videos"
           :key="v.msgId"
