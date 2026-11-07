@@ -35,15 +35,30 @@ pub struct QueueState {
     pub pending: Mutex<VecDeque<Job>>,
     pub results: Mutex<Vec<TaskResult>>,
     pub active: Mutex<Option<ActiveTask>>,
+    /// Where the pending-journal lives (set at startup).
+    pub path: std::path::PathBuf,
 }
 
 impl QueueState {
-    pub fn new() -> Self {
+    /// Write the pending jobs to disk so a restart can restore them.
+    pub async fn persist(&self, path: &std::path::Path) {
+        let pending = self.pending.lock().await;
+        let jobs: Vec<&Job> = pending.iter().collect();
+        let json = serde_json::json!({ "jobs": jobs
+            .iter()
+            .map(|j| serde_json::json!({"id": j.id, "url": j.url}))
+            .collect::<Vec<_>>() });
+        drop(pending);
+        let _ = std::fs::write(path, serde_json::to_vec(&json).unwrap_or_default());
+    }
+
+    pub fn new(path: std::path::PathBuf) -> Self {
         Self {
             next_id: std::sync::atomic::AtomicU64::new(1),
             pending: Mutex::new(VecDeque::new()),
             results: Mutex::new(Vec::new()),
             active: Mutex::new(None),
+            path,
         }
     }
 
@@ -57,6 +72,8 @@ impl QueueState {
             pending.push_back(Job { id, url });
             ids.push(id);
         }
+        drop(pending);
+        self.persist(&self.path).await;
         ids
     }
 }
@@ -64,6 +81,7 @@ impl QueueState {
 pub struct Inner {
     pub config_path: PathBuf,
     pub session_path: PathBuf,
+    pub queue_path: PathBuf,
     pub downloads_dir: PathBuf,
     pub config: RwLock<Config>,
     /// Connected Telegram client (present once API is configured and connect succeeded).

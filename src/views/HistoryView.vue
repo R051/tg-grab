@@ -22,6 +22,7 @@ const recents = ref<WatchEntry[]>([]);
 const dateFilter = ref<number | null>(null); // ms timestamp of picked day
 const thumbs = ref<Record<number, string>>({});
 const thumbsLoading = ref(false);
+void refreshRecents();
 
 interface DayGroup {
   key: string;

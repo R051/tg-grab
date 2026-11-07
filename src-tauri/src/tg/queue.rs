@@ -111,7 +111,11 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
     loop {
         let job = {
             let mut pending = st.queue.pending.lock().await;
-            pending.pop_front()
+            let j = pending.pop_front();
+            drop(pending);
+            // Journal the remaining pending jobs after every take.
+            st.queue.persist(&st.queue_path).await;
+            j
         };
         let Some(job) = job else {
             tokio::time::sleep(Duration::from_millis(500)).await;

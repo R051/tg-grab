@@ -58,6 +58,7 @@ pub fn run() {
             let config = config::Config::load(&config_path);
 
             let st: SharedState = Arc::new(Inner {
+                queue_path: data_dir.join("queue.json"),
                 config_path,
                 session_path,
                 downloads_dir,
@@ -68,8 +69,24 @@ pub fn run() {
                 updates_rx: tokio::sync::Mutex::new(None),
                 login_token: tokio::sync::Mutex::new(None),
                 password_token: tokio::sync::Mutex::new(None),
-                queue: state::QueueState::new(),
+                queue: state::QueueState::new(data_dir.join("queue.json")),
             });
+            // Restore pending download tasks from the previous session.
+            if let Ok(bytes) = std::fs::read(&st.queue_path) {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(jobs) = v.get("jobs").and_then(|j| j.as_array()) {
+                        let urls: Vec<String> = jobs
+                            .iter()
+                            .filter_map(|j| j.get("url").and_then(|u| u.as_str()).map(String::from))
+                            .collect();
+                        if !urls.is_empty() {
+                            tauri::async_runtime::block_on(st.queue.enqueue(urls));
+                            log::info!("restored pending download tasks");
+                        }
+                    }
+                }
+            }
+
             app.manage(st.clone());
 
             // Download workers run for the whole app lifetime.
