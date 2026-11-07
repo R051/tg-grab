@@ -153,6 +153,13 @@ async function loadThumbs() {
   }
 }
 
+function onGridScroll(ev: Event) {
+  const el = ev.target as HTMLElement;
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
+    if (!exhausted.value && !browsing.value) void browse(true);
+  }
+}
+
 function isSelected(v: VideoInfo): boolean {
   return selected.value.has(v.url);
 }
@@ -243,7 +250,7 @@ async function downloadSelected() {
         {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
       </n-text>
     </div>
-    <div class="grid">
+    <div class="grid" @scroll="onGridScroll">
       <template v-for="g in grouped" :key="g.key">
         <div class="day-divider">{{ g.label }}</div>
         <div
@@ -320,9 +327,9 @@ async function downloadSelected() {
 /* video card grid */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 12px;
-  max-height: 560px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 9px;
+  max-height: 620px;
   overflow-y: auto;
   padding: 2px;
 }
@@ -369,13 +376,14 @@ async function downloadSelected() {
   padding: 1px 6px; border-radius: 4px;
 }
 .vname {
-  font-size: 12px; color: var(--text);
-  padding: 7px 8px 0;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; line-height: 1.35; min-height: 2.7em;
-  word-break: break-all;
+  font-size: 11.5px; color: var(--text);
+  padding: 6px 7px 0;
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.35;
+  word-break: break-all; white-space: nowrap; text-overflow: ellipsis;
+  -webkit-line-clamp: unset;
 }
-.vmeta { font-size: 11px; color: var(--text-dim); padding: 3px 8px 9px; }
+.vmeta { font-size: 10.5px; color: var(--text-dim); padding: 2px 7px 7px; }
 
 .recents { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .recents-label { font-size: 11.5px; color: var(--text-faint); }

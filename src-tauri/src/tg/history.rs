@@ -111,7 +111,9 @@ pub async fn browse(
         {
             videos.push(info);
             if videos.len() >= page_cap {
-                finished = day_start.is_none();
+                // Page full — more content may exist below (unless the
+                // requested day was scanned to its start, handled above).
+                finished = false;
                 break;
             }
         }
