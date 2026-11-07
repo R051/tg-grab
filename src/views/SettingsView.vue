@@ -40,6 +40,7 @@ const loggingIn = ref(false);
 // Preferences
 const concurrency = ref(1);
 const lang = ref("zh-CN");
+const clearingThumbs = ref(false);
 
 const downloadsDir = computed(() => store.settings?.downloads_dir ?? "");
 
@@ -167,6 +168,19 @@ async function logout() {
     await store.refreshStatus();
   } catch (e) {
     message.error(String(e), msgOpts);
+  }
+}
+
+async function clearThumbs() {
+  if (!window.confirm(t("settings.prefs.clearThumbsConfirm"))) return;
+  clearingThumbs.value = true;
+  try {
+    const freed = await invoke<number>("clear_thumbs");
+    message.success(t("settings.prefs.thumbsCleared", { mb: (freed / 1048576).toFixed(1) }));
+  } catch (e) {
+    message.error(String(e));
+  } finally {
+    clearingThumbs.value = false;
   }
 }
 
@@ -325,7 +339,12 @@ function errText(e: unknown): string {
           <n-text depth="3">{{ downloadsDir }}</n-text>
         </n-form-item>
       </n-form>
-      <n-button type="primary" size="small" @click="savePrefs">{{ t("settings.api.save") }}</n-button>
+      <div class="row" style="gap: 10px">
+        <n-button type="primary" size="small" @click="savePrefs">{{ t("settings.api.save") }}</n-button>
+        <n-button size="small" :loading="clearingThumbs" @click="clearThumbs">
+          {{ t("settings.prefs.clearThumbs") }}
+        </n-button>
+      </div>
     </n-card>
   </div>
 </template>

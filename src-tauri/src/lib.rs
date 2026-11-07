@@ -87,6 +87,8 @@ pub fn run() {
             commands::logout,
             commands::download_urls,
             commands::get_queue,
+            commands::queue_move,
+            commands::clear_thumbs,
             commands::list_files,
             commands::delete_file,
             commands::reveal_file,

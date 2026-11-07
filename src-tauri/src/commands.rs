@@ -83,6 +83,20 @@ pub async fn get_queue(st: State<'_, SharedState>) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
+pub async fn queue_move(
+    st: State<'_, SharedState>,
+    id: u64,
+    to_front: bool,
+) -> Result<(), String> {
+    api::queue_move(&st, id, to_front).await
+}
+
+#[tauri::command]
+pub async fn clear_thumbs(st: State<'_, SharedState>) -> Result<u64, String> {
+    api::clear_thumbs(&st).await
+}
+
+#[tauri::command]
 pub async fn list_files(st: State<'_, SharedState>) -> Result<Vec<api::DownloadedFile>, String> {
     api::list_files(&st).await
 }

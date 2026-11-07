@@ -97,6 +97,11 @@ async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, Stri
                 .unwrap_or_default(),
         ).await?)?,
         "get_queue" => tg_grab_lib::api::get_queue(&st).await?,
+        "queue_move" => {
+            tg_grab_lib::api::queue_move(&st, i64_arg(&body, "id") as u64, body.get("toFront").and_then(|x| x.as_bool()).unwrap_or(false)).await?;
+            json!({"ok": true})
+        }
+        "clear_thumbs" => json!({"freed": api::clear_thumbs(&st).await?}),
         "list_files" => to_json(tg_grab_lib::api::list_files(&st).await?)?,
         "delete_file" => {
             tg_grab_lib::api::delete_file(&st, s_arg(&body, "name")).await?;

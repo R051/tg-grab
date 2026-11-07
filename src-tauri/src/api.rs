@@ -163,6 +163,47 @@ pub async fn get_queue(st: &SharedState) -> Result<serde_json::Value, String> {
     Ok(crate::tg::queue::snapshot(st).await)
 }
 
+/// Raise a queued job's priority: move it up one slot, or to the very front.
+pub async fn queue_move(st: &SharedState, id: u64, to_front: bool) -> Result<(), String> {
+    let mut pending = st.queue.pending.lock().await;
+    let idx = pending
+        .iter()
+        .position(|j| j.id == id)
+        .ok_or("NOT_FOUND")?;
+    let job = pending.remove(idx).unwrap();
+    if to_front {
+        pending.push_front(job);
+    } else {
+        let new_idx = idx.saturating_sub(1);
+        pending.insert(new_idx, job);
+    }
+    drop(pending);
+    st.queue.persist(&st.queue_path).await;
+    Ok(())
+}
+
+/// Delete all cached thumbnails, returning bytes freed.
+pub async fn clear_thumbs(st: &SharedState) -> Result<u64, String> {
+    let thumbs_dir = st.downloads_dir.join("thumbs");
+    let mut freed: u64 = 0;
+    let mut cleared = false;
+    if let Ok(rd) = std::fs::read_dir(&thumbs_dir) {
+        cleared = true;
+        for entry in rd.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    freed += meta.len();
+                }
+            }
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    if cleared {
+        let _ = std::fs::remove_dir(&thumbs_dir);
+    }
+    Ok(freed)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadedFile {

@@ -105,6 +105,10 @@ function rowTitle(row: Row): string {
   return m ? m[0] : row.url;
 }
 
+function rowIndexQueue(id: number): number {
+  return store.pending.findIndex((p) => p.id === id);
+}
+
 function statusMeta(row: Row): { pill: string; label: string; icon: string } {
   switch (row.kind) {
     case "active":
@@ -138,6 +142,15 @@ async function removeFile(name: string) {
   try {
     await store.deleteFile(name);
     message.success(t("download.deleted"));
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
+async function moveTask(row: Row, toFront: boolean) {
+  try {
+    await invoke("queue_move", { id: row.id, toFront });
+    await store.refreshQueue();
   } catch (e) {
     message.error(String(e));
   }
@@ -238,6 +251,24 @@ async function startDownload() {
             style="margin-top: 5px"
           />
         </div>
+        <template v-if="row.kind === 'queued'">
+          <button
+            v-if="rowIndexQueue(row.id) > 0"
+            class="ghost-btn row-action"
+            :title="t('download.toTop')"
+            @click="moveTask(row, true)"
+          >
+            ⤒
+          </button>
+          <button
+            v-if="rowIndexQueue(row.id) > 1"
+            class="ghost-btn row-action"
+            :title="t('download.moveUp')"
+            @click="moveTask(row, false)"
+          >
+            ↑
+          </button>
+        </template>
         <button
           v-if="(row.kind === 'success' || row.kind === 'cached') && row.name"
           class="ghost-btn row-action"
