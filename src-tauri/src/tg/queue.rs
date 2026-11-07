@@ -264,12 +264,33 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         target = st.downloads_dir.join(&file_name);
     }
 
-    // Download into a .part temp file; only a verified-complete file gets
-    // the real name, so an interrupted run can never leave a broken
-    // "final" file behind.
+    // Download into a .part temp file with a chunk journal (.part.progress).
+    // A verified-complete file is renamed to the real name; an interrupted
+    // one is RESUMED from its completed chunks on the next attempt.
     let part_path = st.downloads_dir.join(format!("{file_name}.part"));
+    let journal_path = st.downloads_dir.join(format!("{file_name}.part.progress"));
+
+    // Resume detection: keep the partial only if its journal matches.
+    let mut resume_done: Option<std::collections::HashSet<u64>> = None;
+    let mut resumed_bytes: u64 = 0;
     if part_path.exists() {
-        let _ = std::fs::remove_file(&part_path);
+        let mut usable = false;
+        if let Ok(bytes) = std::fs::read(&journal_path) {
+            if let Ok(j) = serde_json::from_slice::<PartJournal>(&bytes) {
+                if j.total == total && j.chunk == CHUNK {
+                    let set: std::collections::HashSet<u64> = j.done.into_iter().collect();
+                    let resumed_bytes = (set.len() as u64) * (CHUNK as u64);
+                    if resumed_bytes < total {
+                        usable = true;
+                        resume_done = Some(set);
+                    }
+                }
+            }
+        }
+        if !usable {
+            let _ = std::fs::remove_file(&part_path);
+            let _ = std::fs::remove_file(&journal_path);
+        }
     }
 
     // Publish the active task before starting so the UI can show the name.
@@ -287,7 +308,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         serde_json::to_value(&progress).unwrap_or(serde_json::Value::Null),
     );
 
-    let done = Arc::new(AtomicU64::new(0));
+    let done = Arc::new(AtomicU64::new(resumed_bytes));
     let emitting = Arc::new(AtomicBool::new(true));
 
     // Progress emitter: polls the shared byte counter ~5x/sec.
@@ -313,7 +334,7 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         }
     });
 
-    let result = match download_parallel(st, &client, &media, &part_path, total, done).await {
+    let result = match download_parallel(st, &client, &media, &part_path, total, done, resume_done, &journal_path).await {
         Ok(()) => match tokio::fs::rename(&part_path, &target).await {
             Ok(()) => TaskResult {
                 id: job.id,
@@ -327,13 +348,40 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             Err(e) => TaskResult::failed(job.id, &job.url, e.to_string()),
         },
         Err(e) => {
-            // Remove the partial file so a retry starts clean.
-            let _ = std::fs::remove_file(&part_path);
+            // Keep .part + journal (unless the error is unrecoverable) so the
+            // next attempt resumes from completed chunks.
+            if !e.starts_with("RATE_LIMITED") && !e.starts_with("SIZE_MISMATCH")
+                && !e.starts_with("NOT_LOGGED_IN") && !e.starts_with("IO:") {
+                // recoverable: keep
+            } else if e.starts_with("IO:") {
+                let _ = std::fs::remove_file(&part_path);
+                let _ = std::fs::remove_file(&journal_path);
+            }
             TaskResult::failed(job.id, &job.url, e)
         }
     };
     emitting.store(false, Ordering::Relaxed);
     result
+}
+
+/// Chunk journal for resumable downloads: records which 512 KiB chunks of
+/// the .part file are already on disk. Rewritten periodically (small file).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PartJournal {
+    total: u64,
+    chunk: i32,
+    done: Vec<u64>,
+}
+
+fn write_journal(path: &std::path::Path, total: u64, written: &std::collections::HashSet<u64>) {
+    let j = PartJournal {
+        total,
+        chunk: CHUNK,
+        done: written.iter().copied().collect(),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&j) {
+        let _ = std::fs::write(path, bytes);
+    }
 }
 
 /// Parallel download (mirrors grammers' own concurrent downloader): N workers
@@ -350,45 +398,62 @@ async fn download_parallel(
     target: &std::path::Path,
     total: u64,
     done: Arc<AtomicU64>,
+    resume_done: Option<std::collections::HashSet<u64>>,
+    journal_path: &std::path::Path,
 ) -> Result<(), String> {
     let location = media.to_raw_input_location().ok_or("NOT_A_VIDEO")?;
     let session = st.session.read().await.clone().ok_or("NOT_LOGGED_IN")?;
     let home_dc = session.home_dc_id();
 
-    // Pre-allocate so workers can seek-write concurrently.
-    let mut file = tokio::fs::File::create(target)
-        .await
-        .map_err(|e| format!("IO: {e}"))?;
-    file.set_len(total).await.map_err(|e| format!("IO: {e}"))?;
+    // Open (or pre-allocate) the .part file — harmless on resume.
+    let mut file = if target.exists() {
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(target)
+            .await
+            .map_err(|e| format!("IO: {e}"))?
+    } else {
+        let mut f = tokio::fs::File::create(target)
+            .await
+            .map_err(|e| format!("IO: {e}"))?;
+        f.set_len(total).await.map_err(|e| format!("IO: {e}"))?;
+        f
+    };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>)>();
-    let next_part = Arc::new(tokio::sync::Mutex::new(0u64));
-    let auth_copied: Arc<std::sync::Mutex<HashSet<i32>>> = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    // Chunk queue: everything not already on disk from a previous attempt.
+    let total_chunks = total.div_ceil(CHUNK as u64);
+    let skip = resume_done.unwrap_or_default();
+    let resumed_chunks = skip.len() as u64;
+    let mut remaining: std::collections::VecDeque<u64> = (0..total_chunks)
+        .filter(|i| !skip.contains(i))
+        .collect();
+    let remaining = Arc::new(tokio::sync::Mutex::new(remaining));
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<u8>, u64)>();
 
     let mut tasks = Vec::new();
     for _ in 0..PARALLEL_WORKERS {
         let location = location.clone();
         let tx = tx.clone();
-        let next_part = next_part.clone();
+        let remaining = remaining.clone();
         let client = client.clone();
         let done = done.clone();
-        let auth_copied = auth_copied.clone();
         tasks.push(tokio::spawn(async move {
             let mut dc = home_dc;
-            let mut retry_offset: Option<i64> = None;
+            let mut retry_index: Option<u64> = None;
             loop {
-                // Claim the next chunk offset.
-                let offset: i64 = match retry_offset.take() {
-                    Some(o) => o,
+                // Claim the next chunk index.
+                let index: u64 = match retry_index.take() {
+                    Some(i) => i,
                     None => {
-                        let mut i = next_part.lock().await;
-                        *i += 1;
-                        (CHUNK as u64 * (*i - 1)) as i64
+                        let mut q = remaining.lock().await;
+                        match q.pop_front() {
+                            Some(i) => i,
+                            None => break,
+                        }
                     }
                 };
-                if offset >= total as i64 {
-                    break;
-                }
+                let offset = (index * CHUNK as u64) as i64;
                 let request = tl::functions::upload::GetFile {
                     precise: true,
                     cdn_supported: false,
@@ -400,7 +465,7 @@ async fn download_parallel(
                     Ok(tl::enums::upload::File::File(f)) => {
                         let n = f.bytes.len() as u64;
                         done.fetch_add(n, Ordering::Relaxed);
-                        if tx.send((offset as u64, f.bytes)).is_err() {
+                        if tx.send((offset as u64, f.bytes, index)).is_err() {
                             break; // writer gone (abort/shutdown)
                         }
                         if n == 0 {
@@ -413,18 +478,8 @@ async fn download_parallel(
                     Err(InvocationError::Rpc(err)) => {
                         if err.code == FILE_MIGRATE_ERROR {
                             dc = err.value.unwrap_or_default() as i32;
-                            retry_offset = Some(offset);
+                            retry_index = Some(index);
                             continue;
-                        }
-                        if err.name == "AUTH_KEY_UNREGISTERED" {
-                            // Session key not authorized on this DC yet — export/import it.
-                            match copy_auth_to_dc(&client, dc, auth_copied.clone()).await {
-                                Ok(()) => {
-                                    retry_offset = Some(offset);
-                                    continue;
-                                }
-                                Err(e) => return Err(format!("AUTH_COPY: {e}")),
-                            }
                         }
                         return Err(err.name.clone());
                     }
@@ -436,10 +491,12 @@ async fn download_parallel(
     }
     drop(tx);
 
-    // Writer: place every chunk at its offset.
+    // Writer: place every chunk at its offset, journal progress periodically.
     let mut pos: u64 = 0;
     let mut write_err: Option<String> = None;
-    while let Some((offset, data)) = rx.recv().await {
+    let mut written: std::collections::HashSet<u64> = skip;
+    let mut since_journal: u64 = 0;
+    while let Some((offset, data, index)) = rx.recv().await {
         if offset != pos {
             file.seek(std::io::SeekFrom::Start(offset))
                 .await
@@ -450,9 +507,16 @@ async fn download_parallel(
             break;
         }
         pos = offset + data.len() as u64;
+        written.insert(index);
+        since_journal += 1;
+        if since_journal >= 8 {
+            since_journal = 0;
+            write_journal(journal_path, total, &written);
+        }
     }
     let _ = file.sync_all().await;
     drop(file);
+    write_journal(journal_path, total, &written);
 
     // Propagate worker errors (writer error takes precedence).
     for t in tasks {
@@ -472,6 +536,7 @@ async fn download_parallel(
     if total > 0 && local != total {
         return Err(format!("SIZE_MISMATCH: {local} != {total}"));
     }
+    let _ = resumed_chunks;
     Ok(())
 }
 

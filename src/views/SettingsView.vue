@@ -68,6 +68,11 @@ watch(
 
 const loggedIn = computed(() => store.authorized);
 const apiConfigured = computed(() => store.status?.configured ?? false);
+const KNOWN_LEAKED_IDS = ["2040"];
+const usingLeakedId = computed(() => {
+  const id = store.settings?.api_id;
+  return id != null && KNOWN_LEAKED_IDS.includes(String(id));
+});
 const user = computed(() => store.user ?? "");
 
 async function saveApi() {
@@ -205,6 +210,20 @@ function errText(e: unknown): string {
 
 <template>
   <div class="settings">
+    <!-- API credentials -->
+    <n-card size="small" class="card leak-banner" v-if="usingLeakedId">
+      <div class="leak-row">
+        <span class="leak-icon">⚠️</span>
+        <div>
+          <div class="leak-title">{{ t("settings.api.leakTitle") }}</div>
+          <div class="leak-desc">
+            {{ t("settings.api.leakDesc") }}
+            <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">my.telegram.org/apps</a>
+          </div>
+        </div>
+      </div>
+    </n-card>
+
     <!-- API credentials -->
     <n-card :title="t('settings.api.title')" size="small" class="card">
       <p class="desc">{{ t("settings.api.desc") }}</p>

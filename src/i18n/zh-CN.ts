@@ -16,7 +16,8 @@ export default {
       save: "保存",
       saved: "已保存",
       invalid: "请填写完整",
-    },
+      leakTitle: "正在使用公开泄露的 API 凭证",
+      leakDesc: "这组 api_id 全网流通，随时可能被 Telegram 封禁并影响你的账号。建议免费申请自己的凭证（约 2 分钟）",
     proxy: {
       title: "代理（可选）",
       desc: "支持 socks5://127.0.0.1:7890 或 http://127.0.0.1:7890，留空则直连",

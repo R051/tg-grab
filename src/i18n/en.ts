@@ -14,7 +14,8 @@ export default {
       save: "Save",
       saved: "Saved",
       invalid: "Please fill in both fields",
-    },
+      leakTitle: "Using publicly leaked API credentials",
+      leakDesc: "This api_id is circulating worldwide and may be blocked by Telegram at any time, affecting your account. Get your own for free (takes ~2 minutes)",
     proxy: {
       title: "Proxy (optional)",
       desc: "socks5://127.0.0.1:7890 or http://127.0.0.1:7890 — leave empty for direct connection",
