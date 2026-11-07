@@ -61,6 +61,8 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         updates_rx: tokio::sync::Mutex::new(None),
         login_token: tokio::sync::Mutex::new(None),
         password_token: tokio::sync::Mutex::new(None),
+        watcher_running: std::sync::atomic::AtomicBool::new(false),
+        sweeper_running: std::sync::atomic::AtomicBool::new(false),
         queue: state::QueueState::new(queue_path),
     });
 

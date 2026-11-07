@@ -13,6 +13,19 @@ use std::time::Duration;
 /// Spawn the always-running watcher task. It waits for authorization,
 /// then consumes the update stream; on disconnect it waits and retries.
 pub fn spawn(st: SharedState) {
+    // Only one watcher task for the lifetime of the process.
+    if st
+        .watcher_running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return;
+    }
     tokio::spawn(async move {
         watcher_loop(st).await;
     });
@@ -75,6 +88,18 @@ async fn watcher_loop(st: SharedState) {
 }
 
 fn spawn_sweeper(st: SharedState) {
+    if st
+        .sweeper_running
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return;
+    }
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(600)).await;
         loop {

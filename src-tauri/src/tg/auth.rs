@@ -3,9 +3,10 @@
 use crate::state::{Inner, SharedState};
 use crate::tg::client::{ensure_client, logged_in_name};
 use serde::Serialize;
+use grammers_client::tl;
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum SignInOutcome {
     Ok { user: String },
     NeedPassword { hint: Option<String> },
@@ -54,16 +55,33 @@ pub async fn sign_in(st: &SharedState, code: &str) -> Result<SignInOutcome, Stri
 
 pub async fn check_password(st: &SharedState, password: &str) -> Result<String, String> {
     let client = ensure_client(st).await?;
-    let token = st
-        .password_token
-        .lock()
-        .await
-        .take()
-        .ok_or("NO_PENDING_PASSWORD")?;
-    client
-        .check_password(token, password)
-        .await
-        .map_err(|e| format!("PASSWORD: {e}"))?;
+    let token = {
+        let t = st
+            .password_token
+            .lock()
+            .await
+            .take()
+            .ok_or("NO_PENDING_PASSWORD")?;
+        t
+    };
+    let check = client.check_password(token, password).await;
+    if let Err(e) = check {
+        // Wrong password: rebuild a fresh password token (auth.getPassword)
+        // so the user can retry without redoing the code step.
+        if let Ok(p) = client
+            .invoke(&tl::functions::account::GetPassword {})
+            .await
+        {
+            match p {
+                tl::enums::account::Password::Password(pw) => {
+                    *st.password_token.lock().await =
+                        Some(grammers_client::client::PasswordToken::new(pw));
+                }
+                _ => {}
+            }
+        }
+        return Err(format!("PASSWORD: {e}"));
+    }
     let user = logged_in_name(&client).await.unwrap_or_else(|| "TG".into());
     on_authorized(st).await;
     Ok(user)

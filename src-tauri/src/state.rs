@@ -1,4 +1,4 @@
-//! Shared application state managed by Tauri.
+//! Shared application state managed by Tauri (or the web server shell).
 
 use crate::config::Config;
 use crate::tg::queue::TaskResult;
@@ -8,6 +8,7 @@ use grammers_mtsender::SenderPoolFatHandle;
 use grammers_session::storages::SqliteSession;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
@@ -31,24 +32,37 @@ pub struct ActiveTask {
 }
 
 pub struct QueueState {
-    pub next_id: std::sync::atomic::AtomicU64,
+    pub next_id: AtomicU64,
     pub pending: Mutex<VecDeque<Job>>,
     /// The job currently being downloaded (journalled so a restart can
     /// re-queue it instead of losing it).
     pub in_flight: Mutex<Option<Job>>,
     /// Jobs the user asked to cancel (checked by the writer loop).
     pub cancel_flags: std::sync::Mutex<std::collections::HashSet<u64>>,
-    pub results: Mutex<Vec<TaskResult>>,
-    pub active: Mutex<Option<ActiveTask>>,
     /// Where the pending-journal lives (set at startup).
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
+    pub active: Mutex<Option<ActiveTask>>,
+    pub results: Mutex<Vec<TaskResult>>,
     /// Unix-ms deadline: jobs fail with NOT_LOGGED_IN only after this passes
     /// without a login (gives restored tasks time for the startup login).
-    pub no_auth_until: std::sync::atomic::AtomicU64,
+    pub no_auth_until: AtomicU64,
 }
 
 impl QueueState {
-    /// Write the pending jobs to disk so a restart can restore them.
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(VecDeque::new()),
+            in_flight: Mutex::new(None),
+            cancel_flags: std::sync::Mutex::new(std::collections::HashSet::new()),
+            path,
+            active: Mutex::new(None),
+            results: Mutex::new(Vec::new()),
+            no_auth_until: AtomicU64::new(0),
+        }
+    }
+
+    /// Write the pending + in-flight jobs to disk so a restart can restore them.
     pub async fn persist(&self, path: &std::path::Path) {
         let pending = self.pending.lock().await;
         let inflight = self.in_flight.lock().await;
@@ -65,30 +79,16 @@ impl QueueState {
         let _ = std::fs::write(path, serde_json::to_vec(&json).unwrap_or_default());
     }
 
-    pub fn new(path: std::path::PathBuf) -> Self {
-        Self {
-            next_id: std::sync::atomic::AtomicU64::new(1),
-            pending: Mutex::new(VecDeque::new()),
-            in_flight: Mutex::new(None),
-            results: Mutex::new(Vec::new()),
-            active: Mutex::new(None),
-            path,
-            cancel_flags: std::sync::Mutex::new(std::collections::HashSet::new()),
-            no_auth_until: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
     pub async fn enqueue(&self, urls: Vec<String>) -> Vec<u64> {
         let mut ids = Vec::with_capacity(urls.len());
-        let mut pending = self.pending.lock().await;
-        for url in urls {
-            let id = self
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            pending.push_back(Job { id, url });
-            ids.push(id);
+        {
+            let mut pending = self.pending.lock().await;
+            for url in urls {
+                let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                pending.push_back(Job { id, url });
+                ids.push(id);
+            }
         }
-        drop(pending);
         self.persist(&self.path).await;
         ids
     }
@@ -113,6 +113,9 @@ pub struct Inner {
     pub login_token: Mutex<Option<LoginToken>>,
     /// Pending 2FA token between "code ok" and "password ok".
     pub password_token: Mutex<Option<PasswordToken>>,
+    /// Ensures exactly one watcher task and one sweeper task.
+    pub watcher_running: AtomicBool,
+    pub sweeper_running: AtomicBool,
     pub queue: QueueState,
 }
 
