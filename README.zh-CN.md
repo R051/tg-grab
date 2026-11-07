@@ -26,6 +26,24 @@ npm run tauri dev     # 开发
 npm run tauri build   # 发布安装包（NSIS/MSI）
 ```
 
+## Web 服务 + Docker
+
+同一套代码也能以 **Web 服务**方式运行 —— 任何浏览器都能远程操作完整界面（NAS / 家庭服务器 / VPS）：
+
+```bash
+# 本地运行（需先构建前端：npm run build）
+cd src-tauri
+cargo run --release --no-default-features --features server
+# → 启动时打印访问令牌，界面在 http://0.0.0.0:8080
+
+# 或者用 Docker
+docker compose up -d
+```
+
+- 访问令牌首次启动自动生成并打印到控制台（同时存于 `data/config.json`），浏览器里输入一次即可（保存在 localStorage）
+- 下载、配置、Telegram 会话全部保存在挂载的 `/data` 卷
+- 如需公网暴露，请加反向代理（Caddy/nginx）上 HTTPS
+
 ## 获取 API 凭证
 
 tg-grab 使用你自己的 Telegram 账号走 MTProto 协议，需要**你自己的** API 凭证：

@@ -26,6 +26,24 @@ npm run tauri dev     # development
 npm run tauri build   # release installer (NSIS/MSI)
 ```
 
+## Web server + Docker
+
+The same binary codebase also runs as a **web server** — access the full UI from any browser (NAS / home server / VPS):
+
+```bash
+# local run (frontend must be built once: npm run build)
+cd src-tauri
+cargo run --release --no-default-features --features server
+# → prints the access token, UI at http://0.0.0.0:8080
+
+# or with Docker
+docker compose up -d
+```
+
+- The access token is auto-generated on first boot and printed to the console (also stored in `data/config.json`). Enter it once in the browser — it is kept in localStorage.
+- All downloads, config and the Telegram session live in the mounted `/data` volume.
+- Put it behind a reverse proxy (Caddy/nginx) for HTTPS if exposing beyond your LAN.
+
 ## Getting API credentials
 
 tg-grab speaks MTProto with your own Telegram account, so it needs **your** API credentials:

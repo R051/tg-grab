@@ -2,7 +2,17 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke, setUnauthorizedHandler, setToken, isDesktop } from "./lib/backend";
-import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN, enUS, dateEnUS } from "naive-ui";
+import {
+  NConfigProvider,
+  NMessageProvider,
+  NButton,
+  NInput,
+  darkTheme,
+  zhCN,
+  dateZhCN,
+  enUS,
+  dateEnUS,
+} from "naive-ui";
 import { useAppStore } from "./stores/app";
 import { setLocale } from "./i18n";
 import AppIcon from "./components/AppIcon.vue";
