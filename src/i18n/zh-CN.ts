@@ -60,6 +60,7 @@ export default {
     delete: "删除",
     deleteConfirm: "删除「{name}」？文件将从磁盘移除。",
     deleted: "已删除",
+    retry: "重试",
     noFiles: "还没有下载过文件",
     filesTitle: "已下载",
     status: { queued: "排队中", downloading: "下载中", success: "成功", cached: "已存在", failed: "失败" },

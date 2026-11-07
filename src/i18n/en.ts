@@ -58,6 +58,7 @@ export default {
     delete: "Delete",
     deleteConfirm: "Delete \"{name}\"? The file will be removed from disk.",
     deleted: "Deleted",
+    retry: "Retry",
     noFiles: "Nothing downloaded yet",
     filesTitle: "Downloaded",
     status: { queued: "Queued", downloading: "Downloading", success: "Done", cached: "Cached", failed: "Failed" },

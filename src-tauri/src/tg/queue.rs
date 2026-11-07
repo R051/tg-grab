@@ -109,6 +109,48 @@ pub fn spawn_workers(st: SharedState, app: AppHandle) {
 
 async fn worker_loop(st: SharedState, app: AppHandle) {
     loop {
+        // Restored tasks at startup race the login: wait for an authorized
+        // client (up to 2 min) before failing anything with NOT_LOGGED_IN.
+        let client: Option<Client> = loop {
+            let maybe = tg_client::ensure_client(&st).await.ok();
+            if let Some(c) = &maybe {
+                if c.is_authorized().await.unwrap_or(false) {
+                    break Some(c.clone());
+                }
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let deadline = st.queue.no_auth_until.load(Ordering::Relaxed);
+            if deadline == 0 {
+                st.queue.no_auth_until.store(now + 120_000, Ordering::Relaxed);
+            } else if now >= deadline {
+                log::warn!("queue: still not logged in, failing pending jobs");
+                break None;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+
+        let Some(client) = client else {
+            // Give up for now: drain pending as failed.
+            let drained: Vec<Job> = {
+                let mut pending = st.queue.pending.lock().await;
+                pending.drain(..).collect()
+            };
+            st.queue.persist(&st.queue_path).await;
+            for job in drained {
+                let r = TaskResult::failed(job.id, &job.url, "NOT_LOGGED_IN");
+                {
+                    let mut results = st.queue.results.lock().await;
+                    results.push(r.clone());
+                }
+                let _ = app.emit("queue:result", &r);
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        };
+
         let job = {
             let mut pending = st.queue.pending.lock().await;
             let j = pending.pop_front();
@@ -122,7 +164,7 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
             continue;
         };
 
-        let result = process_job(&st, &app, &job).await;
+        let result = process_job(&st, &app, &job, &client).await;
 
         {
             let mut results = st.queue.results.lock().await;
@@ -138,17 +180,12 @@ async fn worker_loop(st: SharedState, app: AppHandle) {
 }
 
 /// Full pipeline for one job: parse link → fetch message → download video.
-async fn process_job(st: &SharedState, app: &AppHandle, job: &Job) -> TaskResult {
+async fn process_job(st: &SharedState, app: &AppHandle, job: &Job, client: &Client) -> TaskResult {
     let fail_str = |msg: &str| TaskResult::failed(job.id, &job.url, msg);
 
     let (chat, msg_id) = match parse_msg_link(&job.url) {
         Ok(v) => v,
         Err(code) => return fail_str(&code),
-    };
-
-    let client = match st.client.read().await.clone() {
-        Some(c) => c,
-        None => return fail_str("NOT_LOGGED_IN"),
     };
 
     let rc = match tg_client::resolve_chat(st, &client, &chat).await {

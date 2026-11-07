@@ -37,6 +37,9 @@ pub struct QueueState {
     pub active: Mutex<Option<ActiveTask>>,
     /// Where the pending-journal lives (set at startup).
     pub path: std::path::PathBuf,
+    /// Unix-ms deadline: jobs fail with NOT_LOGGED_IN only after this passes
+    /// without a login (gives restored tasks time for the startup login).
+    pub no_auth_until: std::sync::atomic::AtomicU64,
 }
 
 impl QueueState {
@@ -59,6 +62,7 @@ impl QueueState {
             results: Mutex::new(Vec::new()),
             active: Mutex::new(None),
             path,
+            no_auth_until: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
