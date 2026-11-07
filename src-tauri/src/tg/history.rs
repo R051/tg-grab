@@ -63,10 +63,34 @@ pub async fn browse(
     let rc = resolve_chat(st, client, &chat_link).await?;
     let identity = &rc.identity;
 
+    // No date picked → default to the newest day that has content.
+    let date = match date {
+        Some(d) => Some(d),
+        None => {
+            let mut first = client.iter_messages(rc.peer);
+            let latest = first.next().await.map_err(|e| e.to_string())?;
+            match latest {
+                Some(m) => Some(m.date().with_timezone(&Utc).to_rfc3339()),
+                None => {
+                    return Ok(HistoryPage {
+                        chat: ChatInfo {
+                            raw_id: identity.raw_id,
+                            title: identity.title.clone().unwrap_or_else(|| "…".into()),
+                        },
+                        videos: Vec::new(),
+                        next_offset: 0,
+                        exhausted: true,
+                    });
+                }
+            }
+        }
+    };
+
     // Optional local-day window [start, end) as UTC.
     let (day_start, day_end) = match &date {
         Some(day) => {
-            let d = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+            let day = if day.len() > 10 { day[..10].to_string() } else { day.clone() };
+            let d = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d")
                 .map_err(|_| "INVALID_DATE".to_string())?;
             use chrono::TimeZone;
             let start = Local
@@ -82,8 +106,8 @@ pub async fn browse(
         None => (None, None),
     };
 
-    let page_cap = if day_start.is_some() { 60 } else { PAGE_VIDEOS };
-    let scan_cap = if day_start.is_some() { 600 } else { MAX_SCAN };
+    let page_cap = 120;
+    let scan_cap = 1200;
 
     let mut videos: Vec<VideoInfo> = Vec::new();
     let mut scanned = 0usize;
