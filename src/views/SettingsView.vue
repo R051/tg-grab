@@ -18,6 +18,7 @@ import { useAppStore } from "../stores/app";
 const { t } = useI18n();
 const store = useAppStore();
 const message = useMessage();
+const msgOpts = { duration: 6000, keepAliveOnHover: true };
 
 // API credentials
 const apiId = ref("");
@@ -66,11 +67,12 @@ watch(
 );
 
 const loggedIn = computed(() => store.authorized);
+const apiConfigured = computed(() => store.status?.configured ?? false);
 const user = computed(() => store.user ?? "");
 
 async function saveApi() {
   if (!apiId.value.trim() || !apiHash.value.trim()) {
-    message.error(t("settings.api.invalid"));
+    message.error(t("settings.api.invalid"), msgOpts);
     return;
   }
   savingApi.value = true;
@@ -82,7 +84,7 @@ async function saveApi() {
     message.success(t("settings.api.saved"));
     await store.refreshStatus();
   } catch (e) {
-    message.error(String(e));
+    message.error(String(e), msgOpts);
   } finally {
     savingApi.value = false;
   }
@@ -94,7 +96,7 @@ async function saveProxy() {
     await invoke("save_proxy", { proxyUrl: proxyUrl.value.trim() });
     message.success(t("settings.proxy.saved"));
   } catch (e) {
-    message.error(String(e));
+    message.error(String(e), msgOpts);
   } finally {
     savingProxy.value = false;
   }
@@ -108,7 +110,7 @@ async function sendCode() {
     step.value = "code";
     message.success(t("settings.login.codeSent"));
   } catch (e) {
-    message.error(errText(e));
+    message.error(errText(e), msgOpts);
   } finally {
     loggingIn.value = false;
   }
@@ -131,7 +133,7 @@ async function verifyCode() {
       step.value = "password";
     }
   } catch (e) {
-    message.error(errText(e));
+    message.error(errText(e), msgOpts);
   } finally {
     loggingIn.value = false;
   }
@@ -147,7 +149,7 @@ async function submitPassword() {
     password.value = "";
     await store.refreshStatus();
   } catch (e) {
-    message.error(errText(e));
+    message.error(errText(e), msgOpts);
   } finally {
     loggingIn.value = false;
   }
@@ -159,7 +161,7 @@ async function logout() {
     await invoke("logout");
     await store.refreshStatus();
   } catch (e) {
-    message.error(String(e));
+    message.error(String(e), msgOpts);
   }
 }
 
@@ -172,7 +174,7 @@ async function savePrefs() {
     message.success(t("settings.prefs.saved"));
     await store.refreshSettings();
   } catch (e) {
-    message.error(String(e));
+    message.error(String(e), msgOpts);
   }
 }
 
@@ -226,6 +228,9 @@ function errText(e: unknown): string {
         <n-button size="small" style="margin-left: 12px" @click="logout">
           {{ t("settings.login.logout") }}
         </n-button>
+      </template>
+      <template v-else-if="!apiConfigured">
+        <n-text depth="3">{{ t("settings.login.needApiFirst") }}</n-text>
       </template>
       <template v-else>
         <n-form label-placement="top" size="small">

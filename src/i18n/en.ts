@@ -36,6 +36,7 @@ export default {
       submitPassword: "Submit",
       loginSuccess: "Signed in!",
       needPhoneFirst: "Send the code first",
+      needApiFirst: "Fill in the API credentials above and save before signing in",
     },
     prefs: {
       title: "Preferences",

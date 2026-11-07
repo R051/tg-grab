@@ -38,6 +38,7 @@ export default {
       submitPassword: "提交密码",
       loginSuccess: "登录成功！",
       needPhoneFirst: "请先发送验证码",
+      needApiFirst: "请先在上方填写 API 凭证并保存，再登录",
     },
     prefs: {
       title: "偏好设置",
