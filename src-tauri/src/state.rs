@@ -41,6 +41,8 @@ pub struct QueueState {
     pub cancel_flags: std::sync::Mutex<std::collections::HashSet<u64>>,
     /// Where the pending-journal lives (set at startup).
     pub path: PathBuf,
+    /// yt-dlp style archive of downloaded items (one key per line).
+    pub archive_path: PathBuf,
     pub active: Mutex<BTreeMap<u64, ActiveTask>>,
     pub results: Mutex<Vec<TaskResult>>,
     persist_lock: Mutex<()>,
@@ -51,6 +53,7 @@ pub struct QueueState {
 
 impl QueueState {
     pub fn new(path: PathBuf) -> Self {
+        let archive_path = path.with_extension("archive.txt");
         Self {
             next_id: AtomicU64::new(1),
             pending: Mutex::new(VecDeque::new()),
@@ -61,6 +64,7 @@ impl QueueState {
             results: Mutex::new(Vec::new()),
             persist_lock: Mutex::new(()),
             no_auth_until: AtomicU64::new(0),
+            archive_path,
         }
     }
 

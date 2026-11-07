@@ -67,7 +67,7 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         queue_path: queue_path.clone(),
         config_path,
         session_path,
-        default_downloads_dir: downloads_dir,
+        default_downloads_dir: downloads_dir.clone(),
         config: tokio::sync::RwLock::new(config),
         client: tokio::sync::RwLock::new(None),
         session: tokio::sync::RwLock::new(None),
@@ -122,6 +122,7 @@ pub mod desktop {
                 }
             }))
             .plugin(tauri_plugin_opener::init())
+            .plugin(tauri_plugin_dialog::init())
             .invoke_handler(tauri::generate_handler![
                 crate::commands::get_status,
                 crate::commands::save_api_config,

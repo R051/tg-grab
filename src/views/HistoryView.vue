@@ -25,7 +25,15 @@ const selected = ref<Set<string>>(new Set());
 const recents = ref<WatchEntry[]>([]);
 const dateFilter = ref<number | null>(null);
 const thumbs = ref<Record<string, string>>({});
+const kindFilter = ref("all");
 const thumbsLoading = ref(false);
+const KIND_FILTERS = [
+  { key: "all", label: "全部", icon: "📋" },
+  { key: "video", label: "视频", icon: "🎬" },
+  { key: "photo", label: "图片", icon: "🖼" },
+  { key: "audio", label: "音频", icon: "🎵" },
+  { key: "document", label: "文件", icon: "📄" },
+] as const;
 type Query = { link: string; date: string | null; dayStart?: number; dayEnd?: number };
 let currentQuery: Query | null = null;
 let browseSeq = 0;
@@ -208,6 +216,17 @@ async function downloadSelected() {
       <n-button type="primary" size="small" :loading="browsing" @click="browse()">
         {{ t("history.browse") }}
       </n-button>
+    </div>
+    <div v-if="videos.length" class="kind-chips">
+      <button
+        v-for="kf in KIND_FILTERS"
+        :key="kf.key"
+        class="chip-filter"
+        :class="{ on: kindFilter === kf.key }"
+        @click="kindFilter = kf.key"
+      >
+        {{ kf.icon }} {{ kf.label }}
+      </button>
     </div>
     <div v-if="recents.length" class="recents">
       <span class="recents-label">{{ t("history.recent") }}</span>

@@ -72,6 +72,30 @@ fn is_cancelled(st: &SharedState, id: u64) -> bool {
     st.queue.cancel_flags.lock().unwrap().contains(&id)
 }
 
+/// yt-dlp style download archive: one `<channelRaw>_<msgId>` key per line.
+/// Even if the file is deleted or moved, the archive remembers it.
+fn archive_key(raw_id: i64, msg_id: i32) -> String {
+    format!("{raw_id}_{msg_id}")
+}
+
+fn archive_contains(st: &SharedState, key: &str) -> bool {
+    match std::fs::read_to_string(&st.queue.archive_path) {
+        Ok(content) => content.lines().any(|line| line.trim() == key),
+        Err(_) => false,
+    }
+}
+
+fn archive_append(st: &SharedState, key: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&st.queue.archive_path)
+    {
+        let _ = writeln!(f, "{key}");
+    }
+}
+
 fn friendly_error(err: &str) -> String {
     if err.contains("FLOOD_WAIT") {
         "RATE_LIMITED".to_string()
@@ -334,6 +358,22 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
             .unwrap_or_default();
         file_name = format!("{stem}_{msg_id}{ext}");
         target = base_dir.join(&file_name);
+    }
+
+    // yt-dlp style archive check: skip if already downloaded (even if the
+    // file was deleted or moved — the archive remembers by message ID).
+    let archive_key = archive_key(rc.identity.raw_id, msg_id);
+    if archive_contains(st, &archive_key) {
+        return TaskResult {
+            id: job.id,
+            url: job.url.clone(),
+            status: "success".into(),
+            name: Some(file_name),
+            path: None,
+            size: Some(total),
+            cached: Some(true),
+            error: None,
+        };
     }
 
     // Download into a .part temp file with a chunk journal (.part.progress).
