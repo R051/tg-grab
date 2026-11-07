@@ -9,7 +9,7 @@ COPY src ./src
 RUN npm run build
 
 # ── stage 2: server build (no tauri — pure tokio + axum) ──
-FROM rust:1-slim AS server
+FROM rust:1-slim-bookworm AS server
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config build-essential     && rm -rf /var/lib/apt/lists/*
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./

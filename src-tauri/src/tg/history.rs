@@ -3,9 +3,9 @@
 use crate::tg::client::resolve_chat;
 use crate::tg::links::ChatLink;
 use crate::tg::links::{make_msg_link, parse_chat_link, sanitize_filename};
+use crate::tg::media_meta;
 use chrono::Local;
 use grammers_client::Client;
-use crate::tg::media_meta;
 use grammers_client::media::Downloadable;
 
 use grammers_client::message::Message;
@@ -25,10 +25,12 @@ pub struct VideoInfo {
     pub date: Option<String>,
     /// The local file exists and matches the source size.
     pub downloaded: bool,
+    pub local_path: Option<String>,
     /// A server thumbnail is available for this video.
     pub has_thumb: bool,
     /// Canonical t.me link (queue display + download pipeline input).
     pub url: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +38,7 @@ pub struct VideoInfo {
 pub struct ChatInfo {
     pub raw_id: i64,
     pub title: String,
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +55,123 @@ pub struct HistoryPage {
 
 const PAGE_VIDEOS: usize = 120;
 const MAX_SCAN: usize = 1200;
+
+pub fn validate_search(
+    query: &str,
+    kind: &str,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Result<(), String> {
+    if query.chars().count() > 256 {
+        return Err("INVALID_SEARCH".into());
+    }
+    if kind != "all" && crate::tg::MediaKind::parse(kind).is_none() {
+        return Err("INVALID_MEDIA_KINDS".into());
+    }
+    if start.is_some_and(|v| v < 0 || v > i32::MAX as i64)
+        || end.is_some_and(|v| v < 0 || v > i32::MAX as i64)
+        || start.zip(end).is_some_and(|(a, b)| b <= a)
+    {
+        return Err("INVALID_DATE".into());
+    }
+    Ok(())
+}
+
+pub async fn search(
+    st: &crate::state::Inner,
+    client: &Client,
+    link: &str,
+    query: &str,
+    kind: &str,
+    offset: i32,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> Result<HistoryPage, String> {
+    validate_search(query, kind, start, end)?;
+    let rc = resolve_chat(st, client, &parse_chat_link(link)?).await?;
+    use grammers_client::tl::enums::MessagesFilter;
+    let filter = match kind {
+        "video" => MessagesFilter::InputMessagesFilterVideo,
+        "photo" => MessagesFilter::InputMessagesFilterPhotos,
+        "audio" => MessagesFilter::InputMessagesFilterEmpty,
+        "document" => MessagesFilter::InputMessagesFilterDocument,
+        _ => MessagesFilter::InputMessagesFilterEmpty,
+    };
+    let mut searched = client
+        .search_messages(rc.peer)
+        .query(query.trim())
+        .filter(filter)
+        .offset_id(offset);
+    if let Some(value) = start {
+        let date = chrono::DateTime::from_timestamp(value.saturating_sub(1), 0)
+            .ok_or("INVALID_DATE")?
+            .fixed_offset();
+        searched = searched.min_date(&date);
+    }
+    if let Some(value) = end {
+        let date = chrono::DateTime::from_timestamp(value, 0)
+            .ok_or("INVALID_DATE")?
+            .fixed_offset();
+        searched = searched.max_date(&date);
+    }
+    let mut history = client
+        .iter_messages(rc.peer)
+        .offset_id(offset)
+        .max_date(end.unwrap_or(0) as i32);
+    let use_search = !query.trim().is_empty() || matches!(kind, "video" | "photo" | "document");
+    let root = st.downloads_root().await;
+    let records = st.library.lock().await.data.downloads.clone();
+    let mut videos = Vec::new();
+    let mut last = offset;
+    let mut exhausted = false;
+    for _ in 0..MAX_SCAN {
+        let next = if use_search {
+            searched.next().await
+        } else {
+            history.next().await
+        }
+        .map_err(|e| e.to_string())?;
+        let Some(msg) = next else {
+            exhausted = true;
+            break;
+        };
+        last = msg.id();
+        if start.is_some_and(|bound| msg.date().timestamp() < bound) {
+            exhausted = true;
+            break;
+        }
+        if end.is_some_and(|bound| msg.date().timestamp() >= bound) {
+            continue;
+        }
+        if let Some(info) = video_entry(
+            st,
+            &msg,
+            rc.identity.username.as_deref(),
+            rc.identity.raw_id,
+            "",
+            &root,
+            &records,
+        ) {
+            if kind == "all" || info.kind == kind {
+                videos.push(info);
+            }
+            if videos.len() >= 60 {
+                break;
+            }
+        }
+    }
+    Ok(HistoryPage {
+        chat: ChatInfo {
+            raw_id: rc.identity.raw_id,
+            title: rc.identity.title.unwrap_or_default(),
+            username: rc.identity.username,
+        },
+        videos,
+        next_offset: last,
+        next_date: None,
+        exhausted,
+    })
+}
 
 /// Browse one page of a channel's video history.
 ///
@@ -107,6 +227,8 @@ pub async fn browse(
         None => (None, None),
     };
 
+    let root = st.downloads_root().await;
+    let records = st.library.lock().await.data.downloads.clone();
     let mut videos: Vec<VideoInfo> = Vec::new();
     let mut scanned = 0usize;
     let mut last_id = offset_id;
@@ -140,6 +262,8 @@ pub async fn browse(
             identity.username.as_deref(),
             identity.raw_id,
             identity.title.as_deref().unwrap_or(""),
+            &root,
+            &records,
         ) {
             videos.push(info);
             if videos.len() >= PAGE_VIDEOS {
@@ -159,6 +283,7 @@ pub async fn browse(
         chat: ChatInfo {
             raw_id: identity.raw_id,
             title: identity.title.clone().unwrap_or_else(|| "…".into()),
+            username: identity.username.clone(),
         },
         videos,
         next_offset: last_id,
@@ -174,7 +299,9 @@ fn video_entry(
     msg: &Message,
     username: Option<&str>,
     raw_id: i64,
-    channel_title: &str,
+    _channel_title: &str,
+    root: &std::path::Path,
+    records: &std::collections::BTreeMap<String, crate::library::DownloadRecord>,
 ) -> Option<VideoInfo> {
     let media = msg.media()?;
     let meta = media_meta(&media)?;
@@ -182,33 +309,20 @@ fn video_entry(
     let name = sanitize_filename(
         &meta
             .name
-            .unwrap_or_else(|| format!("tg_video_{msg_id}.mp4")),
+            .unwrap_or_else(|| crate::tg::default_name(&meta.kind, msg_id)),
     );
 
-    // The file may sit at the downloads root (legacy) or inside the
-    // organized <channel>/<date>/ subdirectories — check both.
-    let day = msg
-        .date()
-        .with_timezone(&chrono::Local)
-        .format("%Y-%m-%d")
-        .to_string();
-    let chan = sanitize_filename(if channel_title.is_empty() {
-        username.unwrap_or("未知频道")
-    } else {
-        channel_title
-    });
-    let candidates = [
-        st.default_downloads_dir.join(&name),
-        st.default_downloads_dir.join(&chan).join(&day).join(&name),
-    ];
-    let mut local: u64 = 0;
-    for c in &candidates {
-        if let Ok(m) = std::fs::metadata(c) {
-            local = m.len();
-            break;
-        }
-    }
-    let downloaded = meta.size > 0 && local == meta.size;
+    let key = format!("{raw_id}_{msg_id}");
+    let local_path = records
+        .get(&key)
+        .filter(|record| record.root == root && record.size == meta.size)
+        .filter(|record| {
+            std::fs::metadata(root.join(&record.relative_path))
+                .map(|metadata| metadata.is_file() && metadata.len() == meta.size)
+                .unwrap_or(false)
+        })
+        .map(|record| record.relative_path.clone());
+    let downloaded = local_path.is_some();
 
     // A thumbnail counts as available if cached on disk or offered by the server.
     let has_thumb = thumb_path(st, raw_id, msg_id).exists() || best_thumb(&media).is_some();
@@ -221,8 +335,10 @@ fn video_entry(
         duration: meta.duration_secs.map(|d| d as u64).unwrap_or(0),
         date: Some(msg.date().to_rfc3339()),
         downloaded,
+        local_path,
         has_thumb,
         url: make_msg_link(username, raw_id, msg_id),
+        text: msg.text().chars().take(320).collect(),
     })
 }
 

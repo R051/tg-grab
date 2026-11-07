@@ -27,8 +27,11 @@ pub struct WatchEntry {
 fn default_true() -> bool {
     true
 }
+fn default_close_action() -> String {
+    "ask".into()
+}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub api_id: Option<i32>,
@@ -57,6 +60,10 @@ pub struct Config {
     /// Save downloads into <channel>/<date>/ subdirectories.
     #[serde(default)]
     pub organize_by_channel: bool,
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
     /// Further split organized downloads by media type (video/photo/...).
     #[serde(default)]
     pub classify_by_type: bool,
@@ -66,6 +73,28 @@ pub struct Config {
     /// Custom downloads root (falls back to <data>/downloads).
     #[serde(default)]
     pub downloads_dir: Option<PathBuf>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            api_id: None,
+            api_hash: None,
+            proxy_url: None,
+            concurrency: 1,
+            watched: Vec::new(),
+            recent: Vec::new(),
+            lang: "zh-CN".into(),
+            server_token: None,
+            server_port: None,
+            organize_by_channel: false,
+            close_to_tray: true,
+            close_action: default_close_action(),
+            classify_by_type: false,
+            media_kinds: default_media_kinds(),
+            downloads_dir: None,
+        }
+    }
 }
 
 fn default_concurrency() -> usize {
@@ -90,19 +119,21 @@ impl Config {
         cfg
     }
 
-    /// Derive-`Default` gives 0/empty for some fields; clamp to sane values.
+    /// Normalize legacy or manually edited preferences.
     pub fn normalize(&mut self) {
+        if !["ask", "tray", "exit"].contains(&self.close_action.as_str()) {
+            self.close_action = default_close_action();
+        }
         if self.concurrency == 0 {
             self.concurrency = 1;
         }
         if self.lang.is_empty() {
             self.lang = "zh-CN".into();
         }
+        self.media_kinds.retain(|k| MediaKind::parse(k).is_some());
         if self.media_kinds.is_empty() {
             self.media_kinds = default_media_kinds();
         }
-        self.media_kinds
-            .retain(|k| MediaKind::parse(k).is_some());
         self.concurrency = self.concurrency.clamp(1, 4);
     }
 

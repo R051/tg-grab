@@ -123,6 +123,8 @@ pub struct Inner {
     pub session_path: PathBuf,
     pub queue_path: PathBuf,
     pub default_downloads_dir: PathBuf,
+    pub library: Mutex<crate::library::LibraryStore>,
+    pub file_locks: std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<Mutex<()>>>>,
     pub config: RwLock<Config>,
     /// Connected Telegram client (present once API is configured and connect succeeded).
     pub client: RwLock<Option<Client>>,
@@ -142,10 +144,23 @@ pub struct Inner {
     /// Ensures exactly one watcher task and one sweeper task.
     pub watcher_running: AtomicBool,
     pub sweeper_running: AtomicBool,
+    pub window_close_pending: AtomicBool,
     pub queue: QueueState,
 }
 
 impl Inner {
+    pub fn file_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.file_locks.lock().unwrap();
+        if let Some(lock) = locks.get(key).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        if locks.len() > 256 {
+            locks.retain(|_, lock| lock.strong_count() > 0);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key.to_string(), Arc::downgrade(&lock));
+        lock
+    }
     /// Effective downloads root: user-configured, else the default.
     pub async fn downloads_root(&self) -> PathBuf {
         let custom = self

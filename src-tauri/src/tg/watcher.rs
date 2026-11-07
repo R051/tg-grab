@@ -3,8 +3,8 @@
 use crate::state::SharedState;
 use crate::tg::client::resolve_chat;
 use crate::tg::links::{ChatLink, make_msg_link};
-use crate::tg::queue::link_for_entry;
 use crate::tg::media_meta;
+use crate::tg::queue::link_for_entry;
 
 use grammers_client::Client;
 use grammers_client::client::UpdatesConfiguration;
@@ -210,9 +210,8 @@ pub async fn catchup_watched(st: &SharedState, client: &Client) -> Result<(), St
             if let Some(media) = msg.media() {
                 let allowed = {
                     let cfg = st.config.read().await;
-                    media_meta(&media).is_some_and(|m| {
-                        cfg.media_kinds.iter().any(|k| k == m.kind.as_str())
-                    })
+                    media_meta(&media)
+                        .is_some_and(|m| cfg.media_kinds.iter().any(|k| k == m.kind.as_str()))
                 };
                 if allowed {
                     urls.push(make_msg_link(

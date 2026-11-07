@@ -1,12 +1,14 @@
 node_modules
 target
+src-tauri/target
 dist
 data
 downloads
-*.session
-*.session-journal
+*.session*
 config.json
+config.json.bak
 queue.json
+library.json
 .git
 .vscode
 docs

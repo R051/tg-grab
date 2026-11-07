@@ -28,15 +28,15 @@ function newStore(invoke, globals = {}) {
   return {store,handlers,reconnect:()=>reconnect?.()};
 }
 const empty = () => ({pending:[],active:null,activeTasks:[],results:[]});
-const reply = command => command==='get_queue' ? empty() : command==='get_status' ? {configured:true,authorized:true} : command==='get_settings' ? {lang:'zh-CN'} : [];
-function view(file, invoke, store, names) {
+const reply = command => command==='get_queue' ? empty() : command==='get_status' ? {configured:true,authorized:true} : command==='get_settings' ? {lang:'zh-CN'} : command==='library_get' ? {folders:[],items:[]} : [];
+function view(file, invoke, store, names, globals = {}) {
   const messages = [];
-  const exports = load(file,{'vue':{...vue,onUnmounted:()=>{}},'../lib/backend':{invoke},'../lib/errors':load('src/lib/errors.ts'),'../stores/app':{useAppStore:()=>store},'../i18n':{setLocale:()=>{}},'vue-i18n':{useI18n:()=>({t:(key,args)=>args?key+JSON.stringify(args):key,locale:vue.ref('zh-CN')})},'naive-ui':{useMessage:()=>Object.fromEntries(['success','error','info','warning'].map(key=>[key,(...args)=>messages.push([key,...args])]))}},names);
+  const exports = load(file,{'vue':{...vue,onUnmounted:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{}},'../lib/backend':{invoke,isDesktop:false},'../lib/library':load('src/lib/library.ts',{'./backend':{invoke,isDesktop:false}}),'../lib/errors':load('src/lib/errors.ts'),'../stores/app':{useAppStore:()=>store},'../i18n':{setLocale:()=>{}},'vue-i18n':{useI18n:()=>({t:(key,args)=>args?key+JSON.stringify(args):key,locale:vue.ref('zh-CN')})},'naive-ui':{useMessage:()=>Object.fromEntries(['success','error','info','warning'].map(key=>[key,(...args)=>messages.push([key,...args])]))}},names,globals);
   return {...exports,messages};
 }
 const page = (name, videos=[], extra={}) => ({chat:{rawId:name==='A'?1:2,title:name},videos,nextOffset:0,nextDate:null,exhausted:true,...extra});
 const video = (id, name='A') => ({msgId:id,url:`https://t.me/${name}/${id}`,name:`${name}-${id}`,hasThumb:false,downloaded:false,date:'2026-11-07T12:00:00+08:00'});
-const historyStore = () => vue.reactive({pending:[],activeTasks:[],results:[],files:[],refreshQueue:async()=>{}});
+const historyStore = () => vue.reactive({authorized:true,pending:[],activeTasks:[],results:[],files:[],library:{folders:[],items:[]},settings:null,refreshQueue:async()=>{}});
 
 test('failed initialization retries without duplicating event subscriptions', async()=>{
   let fail=true,subscriptions=0;
@@ -117,7 +117,7 @@ test('channel changes start fresh thumbnail requests and discard old images',asy
 test('same-day pagination follows the cursor even if the input changes',async()=>{
   const calls=[];
   const history=view('src/views/HistoryView.vue',(command,args)=>{
-    if(command!=='history_page')return Promise.resolve([]);
+    if(command!=='history_page'&&command!=='history_search')return Promise.resolve([]);
     calls.push(args);
     return Promise.resolve(calls.length===1?page('A',Array.from({length:120},(_,i)=>video(1000-i)),{nextOffset:881,nextDate:'2026-11-07',exhausted:false}):page('A',[video(880)]));
   },historyStore(),['link','dateFilter','browse','loadPrevDay','videos','exhausted']);
@@ -150,4 +150,95 @@ test('HTTPS uses WSS and resynchronization waits until the new socket opens',asy
   sockets[0].onclose();const pending=[...timers.values()][0];timers.clear();pending();assert.equal(reconnects,1);
   sockets[1].onopen();assert.equal(reconnects,2);
   assert.match(backend.fileUrl('channel\\day\\a b.mp4'),/^\/files\/channel\/day\/a%20b.mp4/);off();assert.equal(timers.size,0);
+});
+
+
+test('closing a channel discards late responses and preserves queued downloads',async()=>{
+  const late=deferred();const store=historyStore();store.pending.push({id:7,url:'queued'});
+  const history=view('src/views/HistoryView.vue',(command)=>command==='history_page'?late.promise:Promise.resolve([]),store,['link','browse','closeBrowse','chatTitle','videos','browsing']);
+  history.link.value='A';const pending=history.browse();await history.closeBrowse();late.resolve(page('A',[video(1)]));await pending;
+  assert.equal(history.chatTitle.value,'');assert.equal(history.videos.value.length,0);assert.equal(history.browsing.value,false);assert.equal(store.pending.length,1);
+});
+
+test('server search uses frozen keyword, media type and channel when paging',async()=>{
+ const calls=[];
+ const history=view('src/views/HistoryView.vue',async(command,args)=>{
+  if(command!=='history_search')return [];
+  calls.push(args);return page('A',[{...video(calls.length),kind:'photo'}],{nextOffset:70,exhausted:false});
+ },historyStore(),['link','search','kindFilter','browse','loadPrevDay','visibleVideos']);
+ history.link.value='A';history.search.value='cat';history.kindFilter.value='photo';await history.browse();
+ assert.equal(history.visibleVideos.value.length,1);
+ history.link.value='B';history.search.value='dog';history.kindFilter.value='video';await history.loadPrevDay();
+ assert.equal(calls[1].link,'A');assert.equal(calls[1].query,'cat');assert.equal(calls[1].kind,'photo');assert.equal(calls[1].offsetId,70);
+});
+
+test('preference save sends every visible setting and rejects empty media rules',async()=>{
+  const calls=[];const settings={api_id:123,api_hash:null,lang:'zh-CN',concurrency:1,downloads_dir:null,effective_downloads_dir:'C:/default',media_kinds:['video'],organize_by_channel:false,classify_by_type:false,close_to_tray:true};
+  const store=vue.reactive({settings,status:{},files:[],refreshSettings:async()=>{}});
+  const form=view('src/views/SettingsView.vue',async(command,args)=>calls.push({command,args}),store,['downloadsDir','mediaKinds','organizeByChannel','classifyByType','closeAction','savePrefs','preferenceError']);
+  form.downloadsDir.value='C:/media';form.mediaKinds.value=['photo','document'];form.organizeByChannel.value=true;form.classifyByType.value=true;form.closeAction.value='exit';
+  await form.savePrefs();assert.equal(calls[0].args.downloadsDir,'C:/media');assert.equal(calls[0].args.mediaKinds.join(','),'photo,document');assert.equal(calls[0].args.organizeByChannel,true);assert.equal(calls[0].args.classifyByType,true);assert.equal(calls[0].args.closeAction,'exit');
+  form.mediaKinds.value=[];await form.savePrefs();assert.equal(calls.length,1);assert(form.preferenceError.value);
+});
+
+test('saved local files are marked missing after switching the download root',()=>{
+  const library=load('src/lib/library.ts',{'./backend':{isDesktop:false}});
+  const item={kind:'file',title:'clip',url:'',localPath:'clip.mp4',localRoot:'C:/old'};
+  assert.equal(library.localPathFor(item,[{name:'clip.mp4'}],{effective_downloads_dir:'C:/new'}),null);
+  assert.equal(library.localPathFor(item,[{name:'clip.mp4'}],{effective_downloads_dir:'C:/OLD'}),'clip.mp4');
+});
+
+test('old collection responses cannot overwrite a newer edit',async()=>{
+  const first=deferred(),second=deferred();let calls=0;
+  const {store}=newStore(command=>command==='library_get'?(++calls===1?first.promise:second.promise):reply(command));
+  const a=store.refreshLibrary(),b=store.refreshLibrary();
+  second.resolve({folders:[],items:[{id:'new'}]});await b;
+  first.resolve({folders:[],items:[]});await a;
+  assert.equal(store.library.items[0].id,'new');
+});
+
+test('history downloads become selectable again after their local file is deleted',async()=>{
+  const store=historyStore();store.settings={effective_downloads_dir:'C:/downloads'};
+  store.files=[{name:'clip.mp4',sourceUrl:'https://t.me/example/1'}];
+  const clip={...video(1),kind:'video',downloaded:true,localPath:'clip.mp4'};
+  const history=view('src/views/HistoryView.vue',async command=>command==='history_page'?page('A',[clip]):[],store,['link','browse','selectable']);
+  history.link.value='A';await history.browse();assert.equal(history.selectable(clip),false);
+  store.files=[];assert.equal(history.selectable(clip),true);
+});
+
+test('window close choices retain the dialog on failure and never remember cancellation',async()=>{
+  const calls=[];let fail=true;
+  const store={activeTasks:[],pending:[],refreshSettings:async()=>{}};
+  const close=view('src/components/CloseWindowDialog.vue',async(command,args)=>{calls.push({command,args});if(fail)throw Error('offline');},store,['show','remember','choose','error']);
+  close.show.value=true;close.remember.value=true;await close.choose('tray');
+  assert.equal(close.show.value,true);assert.match(close.error.value,/offline$/);
+  assert.equal(calls[0].args.remember,true);
+  fail=false;await close.choose('cancel');
+  assert.equal(calls[1].args.remember,false);assert.equal(close.show.value,false);
+});
+
+test('channel navigation opens the correct automatic-download pane',()=>{
+  const {store}=newStore(async command=>reply(command));
+  assert.equal(store.currentView,'history');
+  store.openWatch();assert.equal(store.currentView,'history');assert.equal(store.channelMode,'auto');
+  store.openChannel('https://t.me/telegram');assert.equal(store.channelMode,'browse');
+});
+
+test('Chinese and English messages compile, including channel username examples',()=>{
+  const {baseCompile}=require('@intlify/message-compiler');
+  const stubs=Object.fromEntries(['product','experience','simple'].map(name=>['./'+name,load('src/i18n/'+name+'.ts')]));
+  for(const locale of ['zh-CN','en']) {
+    const messages=load('src/i18n/'+locale+'.ts',stubs).default;
+    const inspect=(value,path)=>{for(const [key,item]of Object.entries(value)){
+      if(typeof item==='string')assert.doesNotThrow(()=>baseCompile(item,{onError:error=>{throw error;}}),locale+':'+path+key);
+      else inspect(item,path+key+'.');
+    }};inspect(messages,'');
+  }
+});
+
+test('channel picker discards the old account list after logout',async()=>{
+ const pending=deferred();const store=vue.reactive({authorized:true,user:'first'});
+ const picker=view('src/components/ChannelPicker.vue',()=>pending.promise,store,['directory','loading'],{defineProps:()=>({value:''}),defineEmits:()=>()=>{}});
+ store.authorized=false;store.user=null;await vue.nextTick();pending.resolve({channels:[{rawId:1,title:'old',url:'old',folderIds:[]}],folders:[],foldersError:null,truncated:false});await tick();
+ assert.equal(picker.directory.value.channels.length,0);assert.equal(picker.loading.value,false);
 });

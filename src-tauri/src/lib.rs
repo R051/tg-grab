@@ -1,6 +1,7 @@
 pub mod api;
 pub mod config;
 pub mod events;
+pub mod library;
 pub mod state;
 pub mod tg;
 
@@ -15,11 +16,12 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
     tokio::fs::create_dir_all(&data_dir).await.ok();
     let config_path = data_dir.join("config.json");
     let config = config::Config::load(&config_path);
+    let default_downloads_dir = data_dir.join("downloads");
     let downloads_dir = config
         .downloads_dir
         .clone()
         .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| data_dir.join("downloads"));
+        .unwrap_or_else(|| default_downloads_dir.clone());
     tokio::fs::create_dir_all(&downloads_dir).await.ok();
     let session_path = data_dir.join("tggrab.session");
     let queue_path = data_dir.join("queue.json");
@@ -67,7 +69,11 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         queue_path: queue_path.clone(),
         config_path,
         session_path,
-        default_downloads_dir: downloads_dir.clone(),
+        default_downloads_dir,
+        library: tokio::sync::Mutex::new(library::LibraryStore::load(
+            data_dir.join("library.json"),
+        )),
+        file_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         config: tokio::sync::RwLock::new(config),
         client: tokio::sync::RwLock::new(None),
         session: tokio::sync::RwLock::new(None),
@@ -80,6 +86,7 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         catchup_lock: tokio::sync::Mutex::new(()),
         watcher_running: std::sync::atomic::AtomicBool::new(false),
         sweeper_running: std::sync::atomic::AtomicBool::new(false),
+        window_close_pending: std::sync::atomic::AtomicBool::new(false),
         queue: state::QueueState::new(queue_path),
     });
 
@@ -106,7 +113,7 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
 
 #[cfg(feature = "desktop")]
 pub mod desktop {
-    use super::init_core;
+    use super::{SharedState, init_core};
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::{Manager, WindowEvent};
@@ -147,15 +154,57 @@ pub mod desktop {
                 crate::commands::watch_delete,
                 crate::commands::watch_catchup,
                 crate::commands::history_page,
+                crate::commands::joined_channels,
+                crate::commands::history_search,
                 crate::commands::history_thumbs,
                 crate::commands::history_recent,
                 crate::commands::history_recent_remove,
+                crate::commands::library_get,
+                crate::commands::favorite_save,
+                crate::commands::favorite_remove,
+                crate::commands::folder_save,
+                crate::commands::folder_remove,
+                crate::commands::library_export,
+                crate::commands::library_import,
+                crate::commands::choose_download_directory,
+                crate::commands::media_preview_path,
+                crate::commands::library_export_file,
+                crate::commands::window_action,
+                crate::commands::window_close_pending,
             ])
             .on_window_event(|window, event| {
-                // Closing the window keeps the app resident in the tray.
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let window = window.clone();
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let Some(st) = app.try_state::<SharedState>() else {
+                            return;
+                        };
+                        use std::sync::atomic::Ordering;
+                        if st.window_close_pending.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        let action = st.config.read().await.close_action.clone();
+                        match action.as_str() {
+                            "tray" => {
+                                let _ = window.hide();
+                                st.window_close_pending.store(false, Ordering::SeqCst);
+                            }
+                            "exit" => {
+                                st.queue.persist(&st.queue_path).await;
+                                app.exit(0);
+                            }
+                            _ => {
+                                use tauri::Emitter;
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                if window.emit("desktop:close-requested", true).is_err() {
+                                    st.window_close_pending.store(false, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                    });
                 }
             })
             .setup(|app| {
@@ -199,7 +248,7 @@ pub mod desktop {
                     })
                     .build(app)?;
                 if let Some(icon) = app.default_window_icon() {
-                    tray.set_icon(Some(icon.clone()));
+                    let _ = tray.set_icon(Some(icon.clone()));
                 }
 
                 let data_dir = app.path().app_data_dir()?;

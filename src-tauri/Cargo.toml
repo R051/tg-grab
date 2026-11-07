@@ -24,7 +24,7 @@ required-features = ["server"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", optional = true, features = ["tray-icon"] }
+tauri = { version = "2", optional = true, features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
@@ -37,6 +37,7 @@ regex = "1"
 base64 = "0.22"
 log = "0.4"
 chrono = "0.4"
+getrandom = "0.3"
 
 # Telegram MTProto (pinned to master API with SenderPool/SqliteSession/stream_updates)
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }

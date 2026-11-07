@@ -2,26 +2,31 @@ import { defineStore } from "pinia";
 import { invoke, on, onReconnect, onConnection } from "../lib/backend";
 import type { ConnectionState } from "../lib/backend";
 import { setLocale } from "../i18n";
-import type { ActiveTask, AppSettings, DownloadedFile, QueueSnapshot, Status, TaskResult, WatchEntry } from "../types";
+import type { ActiveTask, AppSettings, DownloadedFile, QueueSnapshot, Status, TaskResult, WatchEntry, LibraryData } from "../types";
 
 type Runtime = {
   init: Promise<void> | null; queue: Promise<void> | null; files: Promise<void> | null;
   queueDirty: boolean; filesDirty: boolean; revision: number; generation: number;
   subscribed: boolean; cleanup: (() => void)[];
-  statusSeq: number; settingsSeq: number; watchedSeq: number;
+  statusSeq: number; settingsSeq: number; watchedSeq: number; librarySeq: number;
 };
 const runtimes = new WeakMap<object, Runtime>();
 function runtime(store: object): Runtime {
   let value = runtimes.get(store);
   if (!value) {
     value = { init: null, queue: null, files: null, queueDirty: false, filesDirty: false,
-      revision: 0, generation: 0, subscribed: false, cleanup: [], statusSeq: 0, settingsSeq: 0, watchedSeq: 0 };
+      revision: 0, generation: 0, subscribed: false, cleanup: [], statusSeq: 0, settingsSeq: 0, watchedSeq: 0, librarySeq: 0 };
     runtimes.set(store, value);
   }
   return value;
 }
 export const useAppStore = defineStore("app", {
   state: () => ({
+    currentView: "history",
+    channelMode: "browse",
+    settingsSection: "account",
+    channelRequest: null as { link: string; sequence: number } | null,
+    library: { folders: [], items: [] } as LibraryData,
     status: null as Status | null, settings: null as AppSettings | null,
     pending: [] as { id: number; url: string }[], activeTasks: [] as ActiveTask[],
     results: [] as TaskResult[], files: [] as DownloadedFile[], watched: [] as WatchEntry[],
@@ -38,6 +43,18 @@ export const useAppStore = defineStore("app", {
     speed: (state) => Object.values(state.speeds).reduce((sum, speed) => sum + speed, 0),
   },
   actions: {
+    openChannel(link: string) {
+      this.channelMode = "browse";
+      this.currentView = "history";
+      this.channelRequest = { link, sequence: (this.channelRequest?.sequence ?? 0) + 1 };
+    },
+    openWatch() { this.channelMode="auto"; this.currentView="history"; },
+    openAccount() { this.settingsSection="account"; this.currentView="settings"; },
+    async refreshLibrary() {
+      const rt = runtime(this), sequence = ++rt.librarySeq;
+      const library = await invoke<LibraryData>("library_get");
+      if (sequence === rt.librarySeq) this.library = library;
+    },
     async refreshStatus() {
       const rt = runtime(this), sequence = ++rt.statusSeq;
       const status = await invoke<Status>("get_status");
@@ -137,6 +154,7 @@ export const useAppStore = defineStore("app", {
           void Promise.all([this.refreshWatched(), this.refreshSettings()]).catch(() => undefined);
         }));
         rt.cleanup.push(await on("auth:changed", () => { void this.refreshStatus().catch(() => undefined); }));
+        rt.cleanup.push(await on("library:changed", () => { void this.refreshLibrary().catch(() => undefined); }));
         rt.subscribed = true;
       } catch (error) {
         rt.cleanup.splice(0).forEach((cleanup) => cleanup());
@@ -144,7 +162,7 @@ export const useAppStore = defineStore("app", {
       }
     },
     async resync() {
-      await Promise.all([this.refreshStatus(), this.refreshSettings(), this.refreshWatched(), this.refreshQueue(), this.refreshFiles()]);
+      await Promise.all([this.refreshStatus(), this.refreshSettings(), this.refreshWatched(), this.refreshQueue(), this.refreshFiles(), this.refreshLibrary()]);
     },
     async init() {
       const rt = runtime(this);

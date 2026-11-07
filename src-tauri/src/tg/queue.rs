@@ -2,7 +2,7 @@
 
 use crate::state::{ActiveTask, Job, SharedState};
 use crate::tg::links::{make_msg_link, parse_msg_link, sanitize_filename};
-use crate::tg::{client as tg_client, media_meta, MediaKind};
+use crate::tg::{client as tg_client, media_meta};
 use grammers_client::media::Downloadable;
 use grammers_client::{Client, InvocationError, tl};
 use grammers_session::Session;
@@ -78,13 +78,6 @@ fn archive_key(raw_id: i64, msg_id: i32) -> String {
     format!("{raw_id}_{msg_id}")
 }
 
-fn archive_contains(st: &SharedState, key: &str) -> bool {
-    match std::fs::read_to_string(&st.queue.archive_path) {
-        Ok(content) => content.lines().any(|line| line.trim() == key),
-        Err(_) => false,
-    }
-}
-
 fn archive_append(st: &SharedState, key: &str) {
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -158,52 +151,15 @@ async fn worker_loop(st: SharedState, worker: usize) {
             tokio::time::sleep(Duration::from_millis(500)).await;
             continue;
         }
-        // Restored tasks at startup race the login: wait for an authorized
-        // client (up to 2 min) before failing anything with NOT_LOGGED_IN.
-        let client: Option<Client> = loop {
-            let maybe = tg_client::ensure_client(&st).await.ok();
-            if let Some(c) = &maybe {
-                if c.is_authorized().await.unwrap_or(false) {
-                    break Some(c.clone());
-                }
-            }
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            let deadline = st.queue.no_auth_until.load(Ordering::Relaxed);
-            if deadline == 0 {
-                st.queue
-                    .no_auth_until
-                    .store(now + 120_000, Ordering::Relaxed);
-            } else if now >= deadline {
-                log::warn!("queue: still not logged in, failing pending jobs");
-                break None;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-
-        let Some(client) = client else {
-            // Give up for now: drain pending as failed.
-            let drained: Vec<Job> = {
-                let mut pending = st.queue.pending.lock().await;
-                pending.drain(..).collect()
-            };
-            st.queue.persist(&st.queue_path).await;
-            for job in drained {
-                let r = TaskResult::failed(job.id, &job.url, "NOT_LOGGED_IN");
-                {
-                    let mut results = st.queue.results.lock().await;
-                    results.push(r.clone());
-                }
-                st.bus.emit(
-                    "queue:result",
-                    serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
-                );
-            }
+        // Authentication loss pauses the durable queue instead of draining it.
+        let Some(client) = tg_client::ensure_client(&st).await.ok() else {
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         };
+        if !client.is_authorized().await.unwrap_or(false) {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
 
         let job = {
             let mut pending = st.queue.pending.lock().await;
@@ -275,106 +231,66 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         Some(m) => m,
         None => return fail_str("UNSUPPORTED_MEDIA"),
     };
-    // Respect the configured media kinds.
-    {
-        let cfg = st.config.read().await.clone();
-        let kind_str = meta.kind.as_str().to_string();
-        if !cfg.media_kinds.iter().any(|k| k == &kind_str) {
-            return fail_str("UNSUPPORTED_MEDIA");
-        }
-    }
-
+    let source_id = archive_key(rc.identity.raw_id, msg_id);
+    let lock = st.file_lock(&source_id);
+    let _exclusive = lock.lock().await;
     // Optional per-channel/date/type subdirectories + effective root.
     let cfg_dl = st.config.read().await.clone();
     let root = st.downloads_root().await;
-    let base_dir = if cfg_dl.organize_by_channel {
+    let mut base_dir = root.clone();
+    if cfg_dl.organize_by_channel {
         let day = msg
             .date()
             .with_timezone(&chrono::Local)
             .format("%Y-%m-%d")
             .to_string();
-        let chan = sanitize_filename(
-            &rc.identity
-                .title
-                .clone()
-                .unwrap_or_else(|| "未知频道".into()),
-        );
-        let mut dir = root.join(chan).join(day);
-        if cfg_dl.classify_by_type {
-            dir = dir.join(meta.kind.folder());
-        }
-        std::fs::create_dir_all(&dir).ok();
-        dir
-    } else {
-        root.clone()
-    };
+        let channel = sanitize_filename(rc.identity.title.as_deref().unwrap_or("channel"));
+        base_dir = base_dir.join(channel).join(day);
+    }
+    if cfg_dl.classify_by_type {
+        base_dir = base_dir.join(meta.kind.folder());
+    }
+    if let Err(error) = tokio::fs::create_dir_all(&base_dir).await {
+        return fail_str(&format!("IO: {error}"));
+    }
     drop(cfg_dl);
 
-    let mut file_name = sanitize_filename(
-        &meta
-            .name
-            .clone()
-            .unwrap_or_else(|| crate::tg::default_name(&meta.kind, msg_id)),
-    );
-    let mut target = base_dir.join(&file_name);
     let total = meta.size;
-
-    // Skip complete files; on a same-name/size-mismatch collision (channels
-    // reuse names like proc_0.mp4) suffix with the message id instead of
-    // overwriting the earlier download.
-    let mut attempts = 0;
-    while target.exists() {
-        let local = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        if total > 0 && local == total {
-            let rel = target
-                .strip_prefix(&base_dir)
-                .unwrap_or(target.as_path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            return TaskResult {
-                id: job.id,
-                url: job.url.clone(),
-                status: "success".into(),
-                name: Some(rel.clone()),
-                path: Some(rel),
-                size: Some(local),
-                cached: Some(true),
-                error: None,
-            };
+    let existing = st
+        .library
+        .lock()
+        .await
+        .data
+        .downloads
+        .get(&source_id)
+        .cloned();
+    if let Some(record) = existing {
+        if record.root == root {
+            if let Ok(path) = crate::api::resolve_download_path(st, &record.relative_path).await {
+                if std::fs::metadata(path)
+                    .map(|metadata| metadata.is_file() && metadata.len() == total)
+                    .unwrap_or(false)
+                {
+                    return TaskResult {
+                        id: job.id,
+                        url: job.url.clone(),
+                        status: "success".into(),
+                        name: Some(record.relative_path.clone()),
+                        path: Some(record.relative_path),
+                        size: Some(total),
+                        cached: Some(true),
+                        error: None,
+                    };
+                }
+            }
         }
-        attempts += 1;
-        if attempts > 1 {
-            let _ = std::fs::remove_file(&target);
-            break;
-        }
-        let p = std::path::Path::new(&file_name);
-        let stem = p
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_name.clone());
-        let ext = p
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        file_name = format!("{stem}_{msg_id}{ext}");
-        target = base_dir.join(&file_name);
     }
-
-    // yt-dlp style archive check: skip if already downloaded (even if the
-    // file was deleted or moved — the archive remembers by message ID).
-    let archive_key = archive_key(rc.identity.raw_id, msg_id);
-    if archive_contains(st, &archive_key) {
-        return TaskResult {
-            id: job.id,
-            url: job.url.clone(),
-            status: "success".into(),
-            name: Some(file_name),
-            path: None,
-            size: Some(total),
-            cached: Some(true),
-            error: None,
-        };
-    }
+    let original = meta
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("media{}", meta.ext));
+    let (file_name, target) =
+        crate::library::download_target(&base_dir, &original, &source_id, &meta.ext);
 
     // Download into a .part temp file with a chunk journal (.part.progress).
     // A verified-complete file is renamed to the real name; an interrupted
@@ -481,20 +397,33 @@ async fn process_job(st: &SharedState, job: &Job, client: &Client) -> TaskResult
         Ok(()) => match tokio::fs::rename(&part_path, &target).await {
             Ok(()) => {
                 let rel = target
-                    .strip_prefix(&st.default_downloads_dir)
+                    .strip_prefix(&root)
                     .unwrap_or(target.as_path())
                     .to_string_lossy()
                     .replace('\\', "/");
                 let _ = tokio::fs::remove_file(&journal_path).await;
-                TaskResult {
-                    id: job.id,
-                    url: job.url.clone(),
-                    status: "success".into(),
-                    name: Some(rel.clone()),
-                    path: Some(rel),
-                    size: Some(total),
-                    cached: Some(false),
-                    error: None,
+                let record = crate::library::DownloadRecord {
+                    source_id: source_id.clone(),
+                    source_url: job.url.clone(),
+                    relative_path: rel.clone(),
+                    root: root.clone(),
+                    size: total,
+                    kind: meta.kind.as_str().into(),
+                };
+                if let Err(error) = crate::library::record_download(st, record).await {
+                    TaskResult::failed(job.id, &job.url, format!("LIBRARY_WRITE_FAILED: {error}"))
+                } else {
+                    archive_append(st, &source_id);
+                    TaskResult {
+                        id: job.id,
+                        url: job.url.clone(),
+                        status: "success".into(),
+                        name: Some(rel.clone()),
+                        path: Some(rel),
+                        size: Some(total),
+                        cached: Some(false),
+                        error: None,
+                    }
                 }
             }
             Err(e) => TaskResult::failed(job.id, &job.url, e.to_string()),

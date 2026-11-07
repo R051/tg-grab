@@ -43,11 +43,19 @@ export interface QueueSnapshot {
 export interface AppSettings {
   api_id: number | null;
   api_hash: string | null;
+  api_hash_set?: boolean;
   proxy_url: string | null;
   concurrency: number;
   watched: WatchEntry[];
   lang: string;
   downloads_dir: string | null;
+  effective_downloads_dir: string;
+  default_downloads_dir?: string;
+  media_kinds: MediaKind[];
+  classify_by_type: boolean;
+  organize_by_channel: boolean;
+  close_to_tray: boolean;
+  close_action?: "ask" | "tray" | "exit";
 }
 
 export interface WatchEntry {
@@ -61,18 +69,22 @@ export interface WatchEntry {
 }
 
 export interface VideoInfo {
+  text?: string;
+  kind: MediaKind;
   msgId: number;
   name: string;
   size: number;
   duration: number;
   date: string | null;
   downloaded: boolean;
+  localPath?: string | null;
   hasThumb: boolean;
   url: string;
 }
+export interface ChannelDirectory { channels:{rawId:number;title:string;username:string|null;url:string;folderIds:number[]}[];folders:{id:number;name:string}[];foldersError:string|null;truncated:boolean }
 
 export interface HistoryPage {
-  chat: { rawId: number; title: string };
+  chat: { rawId: number; title: string; username?: string | null };
   videos: VideoInfo[];
   nextOffset: number;
   nextDate: string | null;
@@ -82,4 +94,19 @@ export interface HistoryPage {
 export interface DownloadedFile {
   name: string;
   size: number;
+  kind: MediaKind;
+  sourceUrl?: string | null;
 }
+
+export type MediaKind = "video" | "photo" | "audio" | "document";
+export type FavoriteKind = MediaKind | "channel" | "file";
+export interface FavoriteDraft {
+  kind: FavoriteKind; title: string; url: string; localPath?: string | null; localRoot?: string | null;
+  sourceTitle?: string; channelId?: number | null; msgId?: number | null;
+  folderId?: string | null; notes?: string;
+}
+export interface Favorite extends FavoriteDraft { id: string; createdAt: string; updatedAt: string }
+export interface CollectionFolder { id: string; name: string }
+export interface LibraryData { folders: CollectionFolder[]; items: Favorite[] }
+export interface LibraryBackup extends LibraryData { format: "tg-grab-library"; version: 1; exportedAt: string }
+export interface MediaDetails extends FavoriteDraft { size?: number; date?: string | null; thumbnail?: string }

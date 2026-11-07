@@ -22,6 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 type St = SharedState;
 
+#[cfg(test)]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -30,15 +31,9 @@ fn now_ms() -> u64 {
 }
 
 fn random_token() -> String {
-    let mut seed = now_ms() as u64 ^ 0x9E3779B97F4A7C15;
-    let mut out = String::new();
-    for _ in 0..8 {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        out += &format!("{:08x}", seed as u32);
-    }
-    out
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).expect("secure randomness unavailable");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn to_json<T: serde::Serialize>(v: T) -> Result<Value, String> {
@@ -80,15 +75,18 @@ async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, Stri
                 body.get("downloadsDir")
                     .and_then(|x| x.as_str())
                     .map(String::from),
-                body.get("mediaKinds")
-                    .and_then(|x| x.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|k| k.as_str())
-                            .map(String::from)
-                            .collect()
-                    }),
+                body.get("mediaKinds").and_then(|x| x.as_array()).map(|a| {
+                    a.iter()
+                        .filter_map(|k| k.as_str())
+                        .map(String::from)
+                        .collect()
+                }),
                 body.get("classifyByType").and_then(|x| x.as_bool()),
+                body.get("organizeByChannel").and_then(|x| x.as_bool()),
+                body.get("closeToTray").and_then(|x| x.as_bool()),
+                body.get("closeAction")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
             )
             .await?;
             Value::Null
@@ -167,6 +165,19 @@ async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, Stri
             tg_grab_lib::api::watch_catchup(&st).await?;
             Value::Null
         }
+        "joined_channels" => to_json(tg_grab_lib::api::joined_channels(&st).await?)?,
+        "history_search" => to_json(
+            tg_grab_lib::api::history_search(
+                &st,
+                s_arg(&body, "link"),
+                s_arg(&body, "query"),
+                s_arg(&body, "kind"),
+                i32_arg(&body, "offsetId"),
+                body.get("dayStart").and_then(Value::as_i64),
+                body.get("dayEnd").and_then(Value::as_i64),
+            )
+            .await?,
+        )?,
         "history_page" => to_json(
             tg_grab_lib::api::history_page(
                 &st,
@@ -199,6 +210,42 @@ async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, Stri
             tg_grab_lib::api::history_recent_remove(&st, i64_arg(&body, "rawId")).await?;
             Value::Null
         }
+        "library_get" => to_json(tg_grab_lib::library::get(&st).await?)?,
+        "favorite_save" => to_json(
+            tg_grab_lib::library::save_favorite(
+                &st,
+                serde_json::from_value(body.get("item").cloned().unwrap_or(Value::Null))
+                    .map_err(|_| "INVALID_LIBRARY_ITEM")?,
+            )
+            .await?,
+        )?,
+        "favorite_remove" => {
+            tg_grab_lib::library::remove_favorite(&st, s_arg(&body, "id")).await?;
+            Value::Null
+        }
+        "folder_save" => to_json(
+            tg_grab_lib::library::save_folder(
+                &st,
+                body.get("id")
+                    .and_then(|value| value.as_str())
+                    .map(String::from),
+                s_arg(&body, "name"),
+            )
+            .await?,
+        )?,
+        "folder_remove" => {
+            tg_grab_lib::library::remove_folder(&st, s_arg(&body, "id")).await?;
+            Value::Null
+        }
+        "library_export" => to_json(tg_grab_lib::library::export(&st).await?)?,
+        "library_import" => to_json(
+            tg_grab_lib::library::import(
+                &st,
+                serde_json::from_value(body.get("data").cloned().unwrap_or(Value::Null))
+                    .map_err(|_| "INVALID_LIBRARY_BACKUP")?,
+            )
+            .await?,
+        )?,
         _ => return Err("UNKNOWN_COMMAND".into()),
     })
 }
@@ -266,7 +313,31 @@ async fn file_handler(
     };
     // tower-http streams bounded chunks and implements GET/HEAD, 206 and 416.
     match ServeFile::new(full).try_call(request).await {
-        Ok(response) => response.map(Body::new),
+        Ok(response) => {
+            let mut response = response.map(Body::new);
+            response
+                .headers_mut()
+                .insert("x-content-type-options", "nosniff".parse().unwrap());
+            let extension = std::path::Path::new(&path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ![
+                "mp4", "webm", "mov", "mp3", "ogg", "wav", "m4a", "flac", "jpg", "jpeg", "png",
+                "webp", "gif", "avif",
+            ]
+            .contains(&extension.as_str())
+            {
+                response
+                    .headers_mut()
+                    .insert("content-disposition", "attachment".parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("content-security-policy", "sandbox".parse().unwrap());
+            }
+            response
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -366,6 +437,7 @@ async fn main() {
         .route("/files/{*path}", get(file_handler))
         .layer(middleware::from_fn_with_state(st.clone(), auth_mw))
         .fallback_service(spa)
+        .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024))
         .with_state(st);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -431,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn organized_files_stream_ranges_and_head() {
         let fixture = Fixture::new().await;
-        let folder = fixture.state.downloads_dir.join("频道/2026-11-07");
+        let folder = fixture.state.default_downloads_dir.join("频道/2026-11-07");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("video.mp4"), b"0123456789").unwrap();
         let path = "频道/2026-11-07/video.mp4";
@@ -461,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn empty_files_and_traversal_are_handled_without_panics() {
         let fixture = Fixture::new().await;
-        std::fs::write(fixture.state.downloads_dir.join("empty.mp4"), []).unwrap();
+        std::fs::write(fixture.state.default_downloads_dir.join("empty.mp4"), []).unwrap();
         let response = fixture.get("empty.mp4", "GET", None).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(
@@ -496,7 +568,7 @@ mod tests {
         let error: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 1000).await.unwrap()).unwrap();
         assert_eq!(error["error"], "INVALID_API_ID");
-        let thumbs = fixture.state.downloads_dir.join("thumbs");
+        let thumbs = fixture.state.default_downloads_dir.join("thumbs");
         std::fs::create_dir_all(&thumbs).unwrap();
         std::fs::write(thumbs.join("thumbnail.jpg"), b"image").unwrap();
         let result = invoke_dispatch(fixture.state.clone(), "clear_thumbs".into(), Value::Null)
@@ -517,7 +589,7 @@ mod tests {
     #[tokio::test]
     async fn file_listing_excludes_partial_files_and_normalizes_paths() {
         let fixture = Fixture::new().await;
-        let root = &fixture.state.downloads_dir;
+        let root = &fixture.state.default_downloads_dir;
         std::fs::create_dir_all(root.join("channel/day")).unwrap();
         for name in [
             "partial.mp4.part",
@@ -530,5 +602,187 @@ mod tests {
         let files = tg_grab_lib::api::list_files(&fixture.state).await.unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "channel/day/clip.mp4");
+    }
+
+    #[tokio::test]
+    async fn settings_persist_all_preferences_without_exposing_credentials() {
+        let fixture = Fixture::new().await;
+        {
+            let mut cfg = fixture.state.config.write().await;
+            cfg.api_id = Some(12345);
+            cfg.api_hash = Some("private-api-hash".into());
+            cfg.server_token = Some("private-server-token".into());
+        }
+        let custom_root = fixture.root.join("custom-media");
+        let saved = json!({
+            "concurrency": 3, "lang":"en", "downloadsDir":custom_root,
+            "mediaKinds":["photo","video","photo"], "classifyByType":true,
+            "organizeByChannel":true, "closeToTray":false
+        });
+        invoke_dispatch(fixture.state.clone(), "save_settings".into(), saved)
+            .await
+            .unwrap();
+        let settings = invoke_dispatch(fixture.state.clone(), "get_settings".into(), Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(settings["effective_downloads_dir"], json!(custom_root));
+        assert_eq!(settings["media_kinds"], json!(["photo", "video"]));
+        assert_eq!(settings["api_hash"], Value::Null);
+        assert_eq!(settings["api_hash_set"], true);
+        let text = settings.to_string();
+        assert!(!text.contains("private-api-hash"));
+        assert!(!text.contains("private-server-token"));
+        let persisted = tg_grab_lib::config::Config::load(&fixture.state.config_path);
+        assert_eq!(persisted.concurrency, 3);
+        assert_eq!(persisted.lang, "en");
+        assert!(persisted.organize_by_channel && persisted.classify_by_type);
+        assert!(!persisted.close_to_tray);
+        let invalid = invoke_dispatch(
+            fixture.state.clone(),
+            "save_settings".into(),
+            json!({"concurrency":1,"lang":"zh-CN","mediaKinds":[]}),
+        )
+        .await;
+        assert_eq!(invalid.unwrap_err(), "INVALID_MEDIA_KINDS");
+        assert_eq!(fixture.state.config.read().await.lang, "en");
+        assert_eq!(fixture.state.config.read().await.concurrency, 3);
+        std::fs::create_dir_all(custom_root.join("频道/day/photo")).unwrap();
+        std::fs::write(custom_root.join("频道/day/photo/image.jpg"), b"image").unwrap();
+        let files = tg_grab_lib::api::list_files(&fixture.state).await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "频道/day/photo/image.jpg");
+        assert_eq!(files[0].kind, "photo");
+        let response = fixture.get("频道/day/photo/image.jpg", "GET", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let thumbs = fixture.state.default_downloads_dir.join("thumbs");
+        std::fs::create_dir_all(&thumbs).unwrap();
+        std::fs::write(thumbs.join("sample.jpg"), b"thumb").unwrap();
+        assert_eq!(
+            tg_grab_lib::api::clear_thumbs(&fixture.state)
+                .await
+                .unwrap()
+                .freed,
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_commands_roundtrip_and_documents_are_downloaded_safely() {
+        let fixture = Fixture::new().await;
+        let folder = invoke_dispatch(
+            fixture.state.clone(),
+            "folder_save".into(),
+            json!({"name":"Reference"}),
+        )
+        .await
+        .unwrap();
+        let favorite = invoke_dispatch(fixture.state.clone(), "favorite_save".into(), json!({"item":{
+            "kind":"channel", "title":"Telegram", "url":"https://t.me/telegram", "folderId":folder["id"]
+        }})).await.unwrap();
+        assert_eq!(favorite["folderId"], folder["id"]);
+        let exported = invoke_dispatch(fixture.state.clone(), "library_export".into(), Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(exported["format"], "tg-grab-library");
+        let imported = invoke_dispatch(
+            fixture.state.clone(),
+            "library_import".into(),
+            json!({"data":exported}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(imported["added"], 0);
+        assert_eq!(imported["skipped"], 1);
+        invoke_dispatch(
+            fixture.state.clone(),
+            "folder_remove".into(),
+            json!({"id":folder["id"]}),
+        )
+        .await
+        .unwrap();
+        let view = invoke_dispatch(fixture.state.clone(), "library_get".into(), Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(view["items"].as_array().unwrap().len(), 1);
+        assert_eq!(view["items"][0]["folderId"], Value::Null);
+        std::fs::write(
+            fixture.state.default_downloads_dir.join("document.html"),
+            b"<script>alert(1)</script>",
+        )
+        .unwrap();
+        let response = fixture.get("document.html", "GET", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()["content-disposition"]
+                .to_str()
+                .unwrap()
+                .starts_with("attachment")
+        );
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    }
+
+    #[tokio::test]
+    async fn close_preference_defaults_to_asking_and_rejects_invalid_changes() {
+        let fixture = Fixture::new().await;
+        assert_eq!(fixture.state.config.read().await.close_action, "ask");
+        let settings = invoke_dispatch(fixture.state.clone(), "get_settings".into(), Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(settings["close_action"], "ask");
+        invoke_dispatch(
+            fixture.state.clone(),
+            "save_settings".into(),
+            json!({"closeAction":"tray"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tg_grab_lib::config::Config::load(&fixture.state.config_path).close_action,
+            "tray"
+        );
+        let error = invoke_dispatch(
+            fixture.state.clone(),
+            "save_settings".into(),
+            json!({"lang":"en","closeAction":"unknown"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "INVALID_CLOSE_ACTION");
+        assert_eq!(fixture.state.config.read().await.lang, "zh-CN");
+        let legacy: tg_grab_lib::config::Config =
+            serde_json::from_value(json!({"close_to_tray":true})).unwrap();
+        assert_eq!(legacy.close_action, "ask");
+    }
+
+    #[tokio::test]
+    async fn search_validates_inputs_before_connecting_and_channel_picker_requires_login() {
+        let fixture = Fixture::new().await;
+        for (body, expected) in [
+            (
+                json!({"link":"https://t.me/telegram","query":"test","kind":"unknown"}),
+                "INVALID_MEDIA_KINDS",
+            ),
+            (
+                json!({"link":"https://t.me/telegram","query":"test","kind":"all","dayStart":500,"dayEnd":400}),
+                "INVALID_DATE",
+            ),
+            (
+                json!({"link":"https://t.me/telegram","query":"a".repeat(257),"kind":"all"}),
+                "INVALID_SEARCH",
+            ),
+        ] {
+            assert_eq!(
+                invoke_dispatch(fixture.state.clone(), "history_search".into(), body)
+                    .await
+                    .unwrap_err(),
+                expected
+            );
+        }
+        assert_eq!(
+            invoke_dispatch(fixture.state.clone(), "joined_channels".into(), Value::Null)
+                .await
+                .unwrap_err(),
+            "API_NOT_CONFIGURED"
+        );
     }
 }

@@ -3,10 +3,10 @@
 
 use crate::config::{Config, WatchEntry};
 use crate::state::{ActiveTask, SharedState};
+use crate::tg::MediaKind;
 use crate::tg::auth::{self, SignInOutcome};
 use crate::tg::client::{ensure_client, logged_in_name, resolve_chat};
 use crate::tg::history::HistoryPage;
-use crate::tg::MediaKind;
 use crate::tg::links::{make_msg_link, parse_chat_link};
 use serde::Serialize;
 
@@ -81,7 +81,15 @@ pub async fn save_api_config(
 ) -> Result<(), String> {
     let _auth = st.auth_lock.lock().await;
     let id: i32 = api_id.trim().parse().map_err(|_| "INVALID_API_ID")?;
-    let hash = api_hash.trim().to_string();
+    let hash = if api_hash.trim().is_empty() {
+        let cfg = st.config.read().await;
+        if cfg.api_id != Some(id) {
+            return Err("INVALID_API_ID".into());
+        }
+        cfg.api_hash.clone().ok_or("INVALID_API_ID")?
+    } else {
+        api_hash.trim().to_string()
+    };
     if id <= 0 || hash.len() != 32 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("INVALID_API_ID".into());
     }
@@ -114,6 +122,25 @@ pub async fn save_proxy(st: &SharedState, proxy_url: String) -> Result<(), Strin
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct AppSettings {
+    pub api_id: Option<i32>,
+    pub api_hash: Option<String>,
+    pub api_hash_set: bool,
+    pub proxy_url: Option<String>,
+    pub concurrency: usize,
+    pub watched: Vec<WatchEntry>,
+    pub lang: String,
+    pub downloads_dir: Option<std::path::PathBuf>,
+    pub effective_downloads_dir: std::path::PathBuf,
+    pub default_downloads_dir: std::path::PathBuf,
+    pub media_kinds: Vec<String>,
+    pub classify_by_type: bool,
+    pub organize_by_channel: bool,
+    pub close_to_tray: bool,
+    pub close_action: String,
+}
+
 pub async fn save_settings(
     st: &SharedState,
     concurrency: Option<u32>,
@@ -121,38 +148,105 @@ pub async fn save_settings(
     downloads_dir: Option<String>,
     media_kinds: Option<Vec<String>>,
     classify_by_type: Option<bool>,
+    organize_by_channel: Option<bool>,
+    close_to_tray: Option<bool>,
+    close_action: Option<String>,
 ) -> Result<(), String> {
     let mut cfg = st.config.write().await;
-    if let Some(c) = concurrency {
-        cfg.concurrency = c.clamp(1, 4) as usize;
+    let mut next = cfg.clone();
+    if let Some(value) = concurrency {
+        next.concurrency = value.clamp(1, 4) as usize;
     }
-    if let Some(l) = lang {
-        if l != "zh-CN" && l != "en" {
+    if let Some(value) = lang {
+        if value != "zh-CN" && value != "en" {
             return Err("INVALID_LANGUAGE".into());
         }
-        cfg.lang = l;
+        next.lang = value;
     }
-    if let Some(d) = downloads_dir {
-        let d = d.trim().to_string();
-        cfg.downloads_dir = if d.is_empty() { None } else { Some(d.into()) };
+    if let Some(value) = downloads_dir {
+        let value = value.trim();
+        let requested = if value.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(value))
+        };
+        if requested.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err("INVALID_DOWNLOAD_DIR".into());
+        }
+        if requested != cfg.downloads_dir {
+            if !st.queue.in_flight.lock().await.is_empty() {
+                return Err("DOWNLOADS_ACTIVE".into());
+            }
+            let root = requested.as_ref().unwrap_or(&st.default_downloads_dir);
+            tokio::fs::create_dir_all(root)
+                .await
+                .map_err(|e| format!("INVALID_DOWNLOAD_DIR: {e}"))?;
+            let probe = root.join(format!(
+                ".tg-grab-write-check-{}",
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ));
+            tokio::fs::write(&probe, [])
+                .await
+                .map_err(|e| format!("INVALID_DOWNLOAD_DIR: {e}"))?;
+            let _ = tokio::fs::remove_file(probe).await;
+        }
+        next.downloads_dir = requested;
     }
     if let Some(kinds) = media_kinds {
-        let cleaned: Vec<String> = kinds
-            .into_iter()
-            .filter(|k| MediaKind::parse(k).is_some())
-            .collect();
-        if !cleaned.is_empty() {
-            cfg.media_kinds = cleaned;
+        if kinds.is_empty() || kinds.iter().any(|kind| MediaKind::parse(kind).is_none()) {
+            return Err("INVALID_MEDIA_KINDS".into());
+        }
+        next.media_kinds = kinds;
+        next.media_kinds.sort();
+        next.media_kinds.dedup();
+    }
+    if let Some(value) = classify_by_type {
+        next.classify_by_type = value;
+    }
+    if let Some(value) = organize_by_channel {
+        next.organize_by_channel = value;
+    }
+    if let Some(value) = close_to_tray {
+        next.close_to_tray = value;
+        if close_action.is_none() {
+            next.close_action = if value { "tray" } else { "exit" }.into();
         }
     }
-    if let Some(c) = classify_by_type {
-        cfg.classify_by_type = c;
+    if let Some(value) = close_action {
+        if !["ask", "tray", "exit"].contains(&value.as_str()) {
+            return Err("INVALID_CLOSE_ACTION".into());
+        }
+        next.close_to_tray = value != "exit";
+        next.close_action = value;
     }
-    save(st, &cfg)
+    save(st, &next)?;
+    *cfg = next;
+    Ok(())
 }
 
-pub async fn get_settings(st: &SharedState) -> Result<Config, String> {
-    Ok(st.config.read().await.clone())
+pub async fn get_settings(st: &SharedState) -> Result<AppSettings, String> {
+    let cfg = st.config.read().await.clone();
+    let effective_downloads_dir = cfg
+        .downloads_dir
+        .clone()
+        .unwrap_or(st.default_downloads_dir.clone());
+    Ok(AppSettings {
+        api_id: cfg.api_id,
+        api_hash: None,
+        api_hash_set: cfg.api_hash.is_some(),
+        proxy_url: cfg.proxy_url,
+        concurrency: cfg.concurrency,
+        watched: cfg.watched,
+        lang: cfg.lang,
+        downloads_dir: cfg.downloads_dir,
+        effective_downloads_dir,
+        default_downloads_dir: st.default_downloads_dir.clone(),
+        media_kinds: cfg.media_kinds,
+        classify_by_type: cfg.classify_by_type,
+        organize_by_channel: cfg.organize_by_channel,
+        close_to_tray: cfg.close_to_tray,
+        close_action: cfg.close_action,
+    })
 }
 
 // ── auth ──
@@ -231,7 +325,7 @@ pub struct ClearedThumbs {
 }
 
 pub async fn clear_thumbs(st: &SharedState) -> Result<ClearedThumbs, String> {
-    let thumbs_dir = st.downloads_root().await.join("thumbs");
+    let thumbs_dir = st.default_downloads_dir.join("thumbs");
     let mut freed: u64 = 0;
     let mut cleared = false;
     if let Ok(rd) = std::fs::read_dir(&thumbs_dir) {
@@ -256,11 +350,23 @@ pub async fn clear_thumbs(st: &SharedState) -> Result<ClearedThumbs, String> {
 pub struct DownloadedFile {
     pub name: String,
     pub size: u64,
+    pub kind: String,
+    pub source_url: Option<String>,
 }
 
 pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String> {
     let mut files = Vec::new();
     let base = st.downloads_root().await;
+    let records: std::collections::HashMap<String, crate::library::DownloadRecord> = st
+        .library
+        .lock()
+        .await
+        .data
+        .downloads
+        .values()
+        .filter(|record| record.root == base)
+        .map(|record| (record.relative_path.clone(), record.clone()))
+        .collect();
     let mut stack = vec![base.clone()];
     while let Some(dir) = stack.pop() {
         let mut rd = match tokio::fs::read_dir(&dir).await {
@@ -296,9 +402,26 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
                 .unwrap_or(entry.path().as_path())
                 .to_string_lossy()
                 .replace('\\', "/");
+            let record = records.get(&rel);
+            let extension = entry
+                .path()
+                .extension()
+                .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            let kind = record.map(|record| record.kind.clone()).unwrap_or_else(|| {
+                match extension.as_str() {
+                    "mp4" | "mkv" | "webm" | "mov" => "video",
+                    "jpg" | "jpeg" | "png" | "webp" | "gif" | "avif" => "photo",
+                    "mp3" | "ogg" | "wav" | "m4a" | "flac" => "audio",
+                    _ => "document",
+                }
+                .into()
+            });
             files.push(DownloadedFile {
                 name: rel,
                 size: meta.len(),
+                kind,
+                source_url: record.map(|record| record.source_url.clone()),
             });
         }
     }
@@ -308,7 +431,10 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
 
 /// Resolve a user-supplied relative file name inside downloads_dir,
 /// rejecting path traversal.
-pub async fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::path::PathBuf, String> {
+pub async fn resolve_download_path(
+    st: &SharedState,
+    rel: &str,
+) -> Result<std::path::PathBuf, String> {
     let normalized = rel.replace('\\', "/");
     let rel_path = std::path::Path::new(&normalized);
     if rel_path.components().any(|c| {
@@ -322,13 +448,9 @@ pub async fn resolve_download_path(st: &SharedState, rel: &str) -> Result<std::p
         return Err("INVALID_NAME".into());
     }
     let root = st.downloads_root().await;
-    let base = root
-        .canonicalize()
-        .unwrap_or_else(|_| root.clone());
+    let base = root.canonicalize().unwrap_or_else(|_| root.clone());
     let full = root.join(rel_path);
-    let canon = full
-        .canonicalize()
-        .map_err(|_| "NOT_FOUND".to_string())?;
+    let canon = full.canonicalize().map_err(|_| "NOT_FOUND".to_string())?;
     if !canon.starts_with(&base) {
         return Err("INVALID_NAME".into());
     }
@@ -403,6 +525,7 @@ pub async fn watch_add(
 
     // Optional: pull the last 10 existing videos right away.
     if backfill {
+        let media_kinds = st.config.read().await.media_kinds.clone();
         let mut urls = Vec::new();
         let mut messages = client.iter_messages(rc.peer);
         loop {
@@ -413,7 +536,9 @@ pub async fn watch_add(
                 break;
             }
             if let Some(media) = msg.media() {
-                if crate::tg::media_meta(&media).is_some() {
+                let allowed = crate::tg::media_meta(&media)
+                    .is_some_and(|meta| media_kinds.iter().any(|kind| kind == meta.kind.as_str()));
+                if allowed {
                     urls.push(make_msg_link(
                         entry.username.as_deref(),
                         entry.raw_id,
@@ -469,6 +594,30 @@ pub async fn watch_catchup(st: &SharedState) -> Result<(), String> {
 }
 
 // ── history ──
+pub async fn joined_channels(
+    st: &SharedState,
+) -> Result<crate::tg::directory::ChannelDirectory, String> {
+    crate::tg::directory::list(st).await
+}
+pub async fn history_search(
+    st: &SharedState,
+    link: String,
+    query: String,
+    kind: String,
+    offset_id: i32,
+    day_start: Option<i64>,
+    day_end: Option<i64>,
+) -> Result<HistoryPage, String> {
+    crate::tg::history::validate_search(&query, &kind, day_start, day_end)?;
+    let client = ensure_client(st).await?;
+    if !client.is_authorized().await.map_err(|e| e.to_string())? {
+        return Err("NOT_LOGGED_IN".into());
+    }
+    crate::tg::history::search(
+        st, &client, &link, &query, &kind, offset_id, day_start, day_end,
+    )
+    .await
+}
 
 pub async fn history_page(
     st: &SharedState,

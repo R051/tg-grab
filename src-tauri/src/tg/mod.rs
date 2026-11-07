@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod directory;
 pub mod history;
 pub mod links;
 pub mod queue;

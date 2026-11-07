@@ -3,12 +3,7 @@ import { ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { errorText } from "../lib/errors";
 import { invoke } from "../lib/backend";
-import {
-  NButton,
-  NInput,
-  NCheckbox,
-  useMessage,
-} from "naive-ui";
+import { NButton, NInput, NCheckbox, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import AppIcon from "../components/AppIcon.vue";
 import type { WatchEntry } from "../types";
@@ -23,7 +18,9 @@ const adding = ref(false);
 const busy = ref(false);
 
 const rowBusy = ref<Set<number>>(new Set());
-function errText(error: unknown): string { return errorText(error, t); }
+function errText(error: unknown): string {
+  return errorText(error, t);
+}
 
 async function addWatch() {
   if (adding.value || !link.value.trim()) return;
@@ -52,7 +49,9 @@ async function toggle(entry: WatchEntry) {
     await store.refreshWatched();
   } catch (e) {
     message.error(errText(e));
-  } finally { rowBusy.value.delete(entry.raw_id); }
+  } finally {
+    rowBusy.value.delete(entry.raw_id);
+  }
 }
 
 async function remove(entry: WatchEntry) {
@@ -64,7 +63,9 @@ async function remove(entry: WatchEntry) {
     await store.refreshWatched();
   } catch (e) {
     message.error(errText(e));
-  } finally { rowBusy.value.delete(entry.raw_id); }
+  } finally {
+    rowBusy.value.delete(entry.raw_id);
+  }
 }
 
 async function catchupNow() {
@@ -103,22 +104,28 @@ async function catchupNow() {
       <n-checkbox v-model:checked="backfill" size="small">
         {{ t("watch.backfill") }}
       </n-checkbox>
-      <n-button quaternary size="small" :loading="busy" style="margin-left: auto" @click="catchupNow">
+      <n-button
+        quaternary
+        size="small"
+        :loading="busy"
+        style="margin-left: auto"
+        @click="catchupNow"
+      >
         {{ t("watch.catchup") }}
       </n-button>
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel fill-panel">
     <div class="panel-title">
       {{ t("watch.title") }}
       <span class="count">{{ store.watched.length }}</span>
     </div>
     <div v-if="!store.watched.length" class="empty">
-      <span class="empty-icon">📡</span>
+      <span class="empty-icon"><AppIcon name="watch" :size="24" /></span>
       {{ t("watch.empty") }}
     </div>
-    <div v-else class="rows">
+    <div v-else class="rows scroll-area">
       <div v-for="w in store.watched" :key="w.raw_id" class="row-item">
         <span class="row-icon">{{ w.enabled ? "👁" : "⏸" }}</span>
         <div class="row-body">
@@ -131,10 +138,20 @@ async function catchupNow() {
           </div>
         </div>
         <div class="actions">
-          <button class="ghost-btn" :disabled="rowBusy.has(w.raw_id)" @click="toggle(w)">
+          <button
+            class="ghost-btn"
+            :disabled="rowBusy.has(w.raw_id)"
+            @click="toggle(w)"
+          >
             {{ w.enabled ? t("watch.pause") : t("watch.resume") }}
           </button>
-          <button class="ghost-btn danger" :disabled="rowBusy.has(w.raw_id)" @click="remove(w)">{{ t("watch.delete") }}</button>
+          <button
+            class="ghost-btn danger"
+            :disabled="rowBusy.has(w.raw_id)"
+            @click="remove(w)"
+          >
+            {{ t("watch.delete") }}
+          </button>
         </div>
       </div>
     </div>
@@ -142,8 +159,23 @@ async function catchupNow() {
 </template>
 
 <style scoped>
-.desc { font-size: 12px; color: var(--text-dim); margin: -4px 0 10px; }
-.row { display: flex; align-items: center; gap: 10px; }
-.actions { display: flex; gap: 6px; flex-shrink: 0; }
-.ghost-btn.danger:hover { border-color: var(--red); color: var(--red); }
+.desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: -4px 0 10px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ghost-btn.danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
 </style>
