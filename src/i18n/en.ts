@@ -98,6 +98,7 @@ export default {
     input: "Channel link or username",
     browse: "Browse",
     loadMore: "Load more",
+    loadPrevDay: "Load previous day",
     selectAll: "Select page",
     pickDate: "Filter by date",
     filteredDay: "Filtered: {day}",

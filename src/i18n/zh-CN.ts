@@ -100,6 +100,7 @@ export default {
     input: "频道链接或用户名",
     browse: "浏览视频",
     loadMore: "加载更多",
+    loadPrevDay: "加载前一天",
     selectAll: "全选本页",
     pickDate: "按日期筛选",
     filteredDay: "已筛选：{day}",

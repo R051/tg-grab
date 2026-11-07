@@ -16,8 +16,7 @@ const browsing = ref(false);
 const downloading = ref(false);
 const chatTitle = ref("");
 const videos = ref<VideoInfo[]>([]);
-const nextOffset = ref(0);
-const exhausted = ref(true);
+const exhausted = ref(false);
 const selected = ref<Set<string>>(new Set());
 const recents = ref<WatchEntry[]>([]);
 const dateFilter = ref<number | null>(null); // ms timestamp of picked day
@@ -57,13 +56,6 @@ const grouped = computed<DayGroup[]>(() => {
   return groups;
 });
 
-function fmtSize(bytes: number): string {
-  if (!bytes) return "0 B";
-  if (bytes < 1048576) return (bytes / 1024).toFixed(0) + " KB";
-  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
-  return (bytes / 1073741824).toFixed(2) + " GB";
-}
-
 function fmtDuration(sec: number): string {
   if (!sec) return "";
   const h = Math.floor(sec / 3600);
@@ -88,7 +80,7 @@ async function refreshRecents() {
 function browseRecent(entry: WatchEntry) {
   link.value = entry.username ? "https://t.me/" + entry.username : "https://t.me/c/" + entry.raw_id;
   dateFilter.value = null;
-  void browse(false);
+  void browse();
 }
 
 async function removeRecent(entry: WatchEntry) {
@@ -96,28 +88,23 @@ async function removeRecent(entry: WatchEntry) {
   await refreshRecents();
 }
 
-async function browse(more: boolean) {
+async function browse() {
   if (!link.value.trim()) return;
   browsing.value = true;
   try {
-    // Date filter only applies to the initial jump; "load more" continues
-    // older-than-that pagination from where the day scan stopped.
     const page = await invoke<HistoryPage>("history_page", {
       link: link.value.trim(),
-      offsetId: more ? nextOffset.value : 0,
-      date: more ? null : pickedDay(),
+      offsetId: 0,
+      date: pickedDay(),
     });
     chatTitle.value = page.chat.title;
-    videos.value = more ? [...videos.value, ...page.videos] : page.videos;
-    nextOffset.value = page.nextOffset;
-    exhausted.value = page.exhausted;
-    if (!more) {
-      selected.value = new Set();
-      thumbs.value = {};
-      void refreshRecents();
-    }
+    videos.value = page.videos;
+    selected.value = new Set();
+    thumbs.value = {};
+    exhausted.value = false;
+    void refreshRecents();
     void loadThumbs();
-    if (page.videos.length || more) {
+    if (page.videos.length) {
       message.info(t("history.loaded", { chat: page.chat.title, n: videos.value.length }));
     } else {
       message.warning(t("history.empty"));
@@ -127,6 +114,65 @@ async function browse(more: boolean) {
   } finally {
     browsing.value = false;
   }
+}
+
+function dayKeyOf(v: VideoInfo): string | null {
+  if (!v.date) return null;
+  try {
+    return new Date(v.date).toLocaleDateString(locale.value, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  } catch {
+    return null;
+  }
+}
+
+function shiftDay(day: string, delta: number): string {
+  const parts = day.split("-").map(Number);
+  const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+  dt.setDate(dt.getDate() + delta);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate());
+}
+
+/// Append the whole day right before the oldest loaded one (dedup by msg id).
+/// Walks back past empty days (up to 3) before declaring exhausted.
+async function loadPrevDay() {
+  if (browsing.value) return;
+  const days = videos.value.map(dayKeyOf).filter(Boolean) as string[];
+  if (!days.length) return;
+  const oldest = days.sort()[0];
+  let target = shiftDay(oldest, -1);
+  const seen = new Set(videos.value.map((v) => v.msgId));
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    browsing.value = true;
+    let page: HistoryPage;
+    try {
+      page = await invoke<HistoryPage>("history_page", {
+        link: link.value.trim(),
+        offsetId: 0,
+        date: target,
+      });
+    } catch (e) {
+      message.error(String(e));
+      browsing.value = false;
+      return;
+    }
+    browsing.value = false;
+
+    const fresh = page.videos.filter((v) => !seen.has(v.msgId));
+    if (fresh.length) {
+      videos.value = [...videos.value, ...fresh];
+      void loadThumbs();
+      exhausted.value = false;
+      return;
+    }
+    target = shiftDay(target, -1);
+  }
+  exhausted.value = true;
 }
 
 async function loadThumbs() {
@@ -150,13 +196,6 @@ async function loadThumbs() {
     /* thumbs are decorative — ignore failures */
   } finally {
     thumbsLoading.value = false;
-  }
-}
-
-function onGridScroll(ev: Event) {
-  const el = ev.target as HTMLElement;
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
-    if (!exhausted.value && !browsing.value) void browse(true);
   }
 }
 
@@ -219,7 +258,7 @@ async function downloadSelected() {
         v-model:value="link"
         :placeholder="t('history.input')"
         size="small"
-        @keyup.enter="browse(false)"
+        @keyup.enter="browse()"
       />
       <n-date-picker
         v-model:value="dateFilter"
@@ -229,7 +268,7 @@ async function downloadSelected() {
         :placeholder="t('history.pickDate')"
         style="width: 150px"
       />
-      <n-button type="primary" size="small" :loading="browsing" @click="browse(false)">
+      <n-button type="primary" size="small" :loading="browsing" @click="browse()">
         {{ t("history.browse") }}
       </n-button>
     </div>
@@ -250,7 +289,7 @@ async function downloadSelected() {
         {{ t("history.filteredDay", { day: pickedDay() ?? "" }) }}
       </n-text>
     </div>
-    <div class="grid" @scroll="onGridScroll">
+    <div class="grid">
       <template v-for="g in grouped" :key="g.key">
         <div class="day-divider">{{ g.label }}</div>
         <div
@@ -278,10 +317,9 @@ async function downloadSelected() {
               @change="toggleSelect(v)"
             />
             <span v-if="v.duration" class="duration">{{ fmtDuration(v.duration) }}</span>
-            <span v-if="v.downloaded" class="done-badge">✅ {{ t("history.downloaded") }}</span>
+            <span v-if="v.downloaded" class="done-badge">✅</span>
           </div>
           <div class="vname" :title="v.name">{{ v.name }}</div>
-          <div class="vmeta">{{ fmtSize(v.size) }}</div>
         </div>
       </template>
     </div>
@@ -295,8 +333,8 @@ async function downloadSelected() {
       >
         {{ t("history.downloadSelected", { n: selected.size }) }}
       </n-button>
-      <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="browse(true)">
-        {{ t("history.loadMore") }}
+      <n-button v-if="!exhausted" quaternary size="small" :loading="browsing" @click="loadPrevDay">
+        {{ t("history.loadPrevDay") }}
       </n-button>
       <label class="selall">
         <input
@@ -324,11 +362,12 @@ async function downloadSelected() {
 .selall { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
 .count { font-size: 12px; font-weight: 400; }
 
-/* video card grid */
+/* video card grid — fixed-size cards, thumbs crop to fit */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
   gap: 7px;
+  align-items: start;
   max-height: 620px;
   overflow-y: auto;
   padding: 2px;
@@ -344,20 +383,19 @@ async function downloadSelected() {
 .vcard {
   background: var(--bg-inset);
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   transition: all 0.12s;
-  display: flex; flex-direction: column;
 }
-.vcard:hover { border-color: #3d444d; transform: translateY(-1px); }
+.vcard:hover { border-color: #3d444d; }
 .vcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .vcard.downloaded { opacity: 0.55; cursor: default; }
 .thumb-wrap { position: relative; aspect-ratio: 16 / 9; background: var(--surface-2); }
 .thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb-empty {
   display: flex; align-items: center; justify-content: center;
-  font-size: 22px; color: var(--text-faint);
+  font-size: 18px; color: var(--text-faint);
 }
 .check {
   position: absolute; top: 4px; left: 4px; z-index: 2;
@@ -370,20 +408,16 @@ async function downloadSelected() {
   padding: 0 4px; border-radius: 3px;
 }
 .done-badge {
-  position: absolute; left: 6px; bottom: 6px;
-  background: rgba(0, 0, 0, 0.75); color: var(--accent-bright);
-  font-size: 10.5px; font-weight: 600;
-  padding: 1px 6px; border-radius: 4px;
+  position: absolute; left: 20px; bottom: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  font-size: 9px;
+  padding: 0 4px; border-radius: 3px;
 }
 .vname {
   font-size: 10.5px; color: var(--text);
-  padding: 5px 6px 0;
-  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
-  overflow: hidden; line-height: 1.35;
-  word-break: break-all; white-space: nowrap; text-overflow: ellipsis;
-  -webkit-line-clamp: unset;
+  padding: 5px 6px 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.vmeta { font-size: 9.5px; color: var(--text-dim); padding: 2px 6px 6px; }
 
 .recents { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .recents-label { font-size: 11.5px; color: var(--text-faint); }
