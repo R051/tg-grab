@@ -39,7 +39,7 @@ regex = "1"
 base64 = "0.22"
 log = "0.4"
 chrono = "0.4"
-getrandom = "0.3"
+getrandom = "0.4"
 
 # Telegram MTProto (pinned to master API with SenderPool/SqliteSession/stream_updates)
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "fa7692e49f301f16dc671c2f305ac1a32cad1a8e" }
