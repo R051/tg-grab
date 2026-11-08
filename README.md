@@ -52,10 +52,10 @@ docker compose logs tg-grab
 | 镜像标签 | 用途 |
 | --- | --- |
 | `preview` | 跟随最新预览版，Compose 默认使用此标签 |
-| `0.1.0` | 固定到首个预览版 |
+| `0.1.1` | 固定到当前预览版 |
 | `sha-<commit>` | 固定到某次源码提交 |
 
-需要固定版本时，在本地 `.env` 中设置 `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.0`。更新当前使用的镜像时，执行 `docker compose pull` 和 `docker compose up -d --no-build`。
+需要固定版本时，在本地 `.env` 中设置 `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.1`。更新当前使用的镜像时，执行 `docker compose pull` 和 `docker compose up -d --no-build`。
 
 需要从源码构建时，执行：
 

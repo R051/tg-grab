@@ -433,7 +433,7 @@ import { fileUrl, isDesktop } from "../lib/backend";
   color: var(--red);
 }
 .row-item.k-active {
-  background: rgba(96, 165, 250, 0.05);
+  background: var(--accent-soft);
 }
 
 .filters {

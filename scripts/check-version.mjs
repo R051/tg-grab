@@ -13,5 +13,7 @@ const versions = {
   'Cargo.lock': text('src-tauri/Cargo.lock').match(/\[\[package\]\]\s+name = "tg-grab"\s+version = "([^"]+)"/)?.[1],
 };
 for (const [file, value] of Object.entries(versions)) assert.equal(value, version, `${file} version differs`);
+assert.equal(json('src-tauri/tauri.conf.json').bundle.resources['icons/icon.ico'],
+  `branding/tg-grab-${version}.ico`, 'Bundled shortcut icon path must follow the app version');
 if (process.argv[2]) assert.equal(process.argv[2], `v${version}`, 'Release tag must match the app version');
 console.log(`Versions match: ${version}`);

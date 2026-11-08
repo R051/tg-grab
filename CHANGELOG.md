@@ -1,5 +1,20 @@
 # 更新记录 / Changelog
 
+## [0.1.1] - 2026-11-08
+
+### 改进 / Improvements
+
+- 全部页面统一为蓝灰深色配色，与新版 Logo 保持一致；在线、完成等状态保留绿色提示。
+- 表单、弹窗、菜单与页面共用一套颜色，提升文字对比和层次。
+- 窗口 / 任务栏与托盘明确使用同一份新版 Logo，安装程序也使用新版图标。
+- 安装更新时刷新已有桌面、开始菜单及任务栏固定快捷方式的图标；保留原来的快捷方式选择。
+- 新增从 0.1.0 升级、快捷方式图标与本地数据保留检查。
+
+运行 `tg-grab_0.1.1_x64-setup.exe` 覆盖安装即可，登录和本地收藏会保留。
+
+The blue-gray theme now matches the new logo. Window, tray, installer and existing
+shortcuts use the same brand assets. Install over 0.1.0 to update while keeping local data.
+
 ## [0.1.0] - 2026-11-08
 
 首个公开预览版 / First public preview.

@@ -30,7 +30,7 @@ import LibraryView from "./views/LibraryView.vue";
 import FilesView from "./views/FilesView.vue";
 import CloseWindowDialog from "./components/CloseWindowDialog.vue";
 
-import type { GlobalThemeOverrides } from "naive-ui";
+import { themeOverrides } from "./theme";
 
 const { t, locale } = useI18n();
 const store = useAppStore();
@@ -69,30 +69,6 @@ function submitWebToken() {
   webNeedToken.value = false;
   location.reload();
 }
-
-const themeOverrides: GlobalThemeOverrides = {
-  common: {
-    primaryColor: "#10b981",
-    primaryColorHover: "#34d399",
-    primaryColorPressed: "#059669",
-    primaryColorSuppl: "#34d399",
-    bodyColor: "#101114",
-    cardColor: "#17191e",
-    inputColor: "#0d0f12",
-    actionColor: "#17191e",
-    borderColor: "rgba(255, 255, 255, 0.09)",
-    dividerColor: "rgba(255, 255, 255, 0.06)",
-    borderRadius: "10px",
-    fontWeight: "500",
-  },
-  Button: {
-    colorPrimary: "#10b981",
-    colorHoverPrimary: "#34d399",
-    colorPressedPrimary: "#059669",
-    borderPrimary: "1px solid rgba(16, 185, 129, 0.4)",
-  },
-  Card: { borderRadius: "14px" },
-};
 
 const navs = computed(() => [
   {

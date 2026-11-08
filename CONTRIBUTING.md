@@ -21,6 +21,8 @@ GitHub-hosted Windows runner.
 
 1. Keep `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
    `src-tauri/Cargo.lock` and `src-tauri/tauri.conf.json` on the same version.
+   Update the bundled shortcut icon destination to `branding/tg-grab-VERSION.ico`
+   as well; `npm run check:version` verifies it.
 2. Add the version's release notes to `CHANGELOG.md`. Run the checks above.
 3. Push the changes and wait for `CI` to pass.
 4. Create and push the matching tag, for example `v0.1.0`.

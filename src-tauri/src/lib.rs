@@ -208,11 +208,17 @@ pub mod desktop {
                 }
             })
             .setup(|app| {
+                // Use the same embedded brand asset for the window/taskbar and tray.
+                let icon = tauri::include_image!("icons/128x128.png");
+                if let Some(window) = app.get_webview_window("main") {
+                    window.set_icon(icon.clone())?;
+                }
                 // Tray icon: the app keeps downloading while hidden.
                 let show = MenuItem::with_id(app, "show", "显示 tg-grab", true, None::<&str>)?;
                 let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
                 let tray_menu = Menu::with_items(app, &[&show, &quit])?;
-                let tray = TrayIconBuilder::new()
+                TrayIconBuilder::new()
+                    .icon(icon)
                     .menu(&tray_menu)
                     .tooltip("tg-grab")
                     .show_menu_on_left_click(false)
@@ -247,9 +253,6 @@ pub mod desktop {
                         _ => {}
                     })
                     .build(app)?;
-                if let Some(icon) = app.default_window_icon() {
-                    let _ = tray.set_icon(Some(icon.clone()));
-                }
 
                 let data_dir = app.path().app_data_dir()?;
                 let st = tauri::async_runtime::block_on(async {

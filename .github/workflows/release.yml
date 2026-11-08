@@ -8,7 +8,7 @@ on:
       tag:
         description: Existing version tag to build
         required: true
-        default: v0.1.0
+        default: v0.1.1
       prerelease:
         description: Publish as a preview
         type: boolean
@@ -51,7 +51,7 @@ jobs:
       - run: npm ci
       - run: node scripts/check-version.mjs "$env:RELEASE_TAG"
       - run: npm run tauri build -- --bundles nsis
-      - name: Verify fresh installation and reinstall
+      - name: Verify fresh installation, upgrade, icons and reinstall
         shell: pwsh
         run: ./scripts/verify-windows-install.ps1
       - name: Prepare installer and checksums
