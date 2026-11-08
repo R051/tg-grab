@@ -1,8 +1,22 @@
 {
   "name": "tg-grab",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
+  "description": "Telegram media downloader and local collections",
+  "author": {
+    "name": "R051",
+    "url": "https://github.com/R051"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/R051/tg-grab",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/R051/tg-grab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/R051/tg-grab/issues/new/choose"
+  },
   "scripts": {
     "dev": "vite",
     "test": "node --test tests/frontend.test.cjs",

@@ -22,6 +22,7 @@ import {
 import { useAppStore } from "../stores/app";
 import { setLocale } from "../i18n";
 import { exportCollections, formatSize } from "../lib/library";
+import AboutPanel from "../components/AboutPanel.vue";
 
 const { t } = useI18n();
 const store = useAppStore();
@@ -32,7 +33,7 @@ const section = computed({
     store.settingsSection = value;
   },
 });
-const sectionKeys = ["account", "storage", "rules", "general", "data"] as const;
+const sectionKeys = ["account", "storage", "rules", "general", "data", "about"] as const;
 const message = useMessage();
 const msgOpts = { duration: 6000, keepAliveOnHover: true };
 
@@ -696,6 +697,9 @@ function errText(error: unknown): string {
             t("settings.prefs.clearThumbs")
           }}</n-button></n-card
         >
+      </section>
+      <section v-show="section === 'about'" class="settings-section">
+        <AboutPanel />
       </section>
     </div>
     <div

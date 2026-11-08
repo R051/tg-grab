@@ -20,6 +20,8 @@ Telegram 媒体下载与本地收藏工具，支持 Windows 桌面版和自托�
 
 首个版本为预览版，安装包尚未进行 Windows 代码签名。安装程序支持简体中文和英语。覆盖安装会保留应用数据；需要单独备份收藏时，可先从设置导出收藏元数据。
 
+在 **设置 → 关于** 可查看作者、当前版本和仓库地址，或打开版本下载、问题反馈和更新记录。
+
 ## 主要功能
 
 - 直接选择已加入的频道，并按 Telegram 文件夹筛选。
@@ -52,10 +54,10 @@ docker compose logs tg-grab
 | 镜像标签 | 用途 |
 | --- | --- |
 | `preview` | 跟随最新预览版，Compose 默认使用此标签 |
-| `0.1.1` | 固定到当前预览版 |
+| `0.1.2` | 固定到当前预览版 |
 | `sha-<commit>` | 固定到某次源码提交 |
 
-需要固定版本时，在本地 `.env` 中设置 `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.1`。更新当前使用的镜像时，执行 `docker compose pull` 和 `docker compose up -d --no-build`。
+需要固定版本时，在本地 `.env` 中设置 `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.2`。更新当前使用的镜像时，执行 `docker compose pull` 和 `docker compose up -d --no-build`。
 
 需要从源码构建时，执行：
 

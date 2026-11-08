@@ -1,5 +1,16 @@
 # 更新记录 / Changelog
 
+## [0.1.2] - 2026-11-08
+
+- 设置新增“关于”：展示作者 R051、当前版本和完整仓库地址，Logo 居中。
+- 提供项目仓库、版本下载、问题反馈、更新记录和 MIT 许可入口，支持中英文。
+- 桌面链接使用默认浏览器打开，Web 链接在新标签页打开。
+- 安装程序与项目元信息补充项目主页；界面版本号自动读取发布版本。
+
+Settings now includes an About page with the author, version, repository,
+release downloads, issue reporting, changelog and license. External links open
+in your browser. Install over the previous preview to keep local data.
+
 ## [0.1.1] - 2026-11-08
 
 ### 改进 / Improvements
