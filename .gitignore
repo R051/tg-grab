@@ -38,6 +38,9 @@ config.json.bak
 downloads/
 
 # Local server state
+.env
+.env.*
+!.env.example
 data/
 *.session-wal
 *.session-shm

@@ -1,107 +1,107 @@
+<img src="public/brand/icon.svg" width="88" height="88" alt="tg-grab 标志" />
+
 # tg-grab
 
-[English](README.md)
+Telegram 媒体下载与本地收藏工具，支持 Windows 桌面版和自托管 Web 版。
 
-Telegram 频道/群组媒体下载与本地收藏工具 —— 原生桌面应用，基于 **Rust + Tauri v2 + Vue 3**。
+[English](README.md) · [下载 Windows 预览版](https://github.com/R051/tg-grab/releases) · [Docker 部署](#docker-部署) · [更新记录](CHANGELOG.md)
 
-## 功能
+[![自动检查](https://github.com/R051/tg-grab/actions/workflows/ci.yml/badge.svg)](https://github.com/R051/tg-grab/actions/workflows/ci.yml)
+[![发行版本](https://img.shields.io/github/v/release/R051/tg-grab?include_prereleases)](https://github.com/R051/tg-grab/releases)
+[![MIT 许可](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- **📥 手动下载** —— 粘贴一个或多个 `t.me` 消息链接，实时进度条
-- **📡 自动监听** —— 订阅频道/群组，新内容按媒体类型规则自动下载
-- **🎞 频道历史** —— 按 Telegram 文件夹选择已加入频道，按关键词/类型/日期搜索历史，预览并勾选下载；可停止加载或关闭当前浏览
-- **本地收藏夹** —— 频道、媒体消息和本地文件统一收藏，支持分组、备注、搜索及 JSON 合并导入/导出
-- **媒体与文件** —— 下载任务和本地文件分开管理，播放已下载的视频/音频、查看图片、打开来源
-- **下载偏好** —— 选择保存目录，按频道/日期和媒体类型分类，独立设置自动下载类型
-- **残缺文件防护** —— 按大小校验，限流/中断留下的半截文件自动重下
-- **温和设计** —— 串行队列（可调 1–4 并发）、限流自动等待
-- **双语界面** —— 中文 / English，暗色主题
-- **真原生应用** —— 单安装包，无需 Python/Node 运行时
+## Windows 安装
 
-## 收藏与文件管理
+1. 从 [Releases](https://github.com/R051/tg-grab/releases) 下载 **Windows x64 安装包**，同页提供 `SHA256SUMS` 文件校验值。
+2. 安装并打开软件，从左下角账号入口填写自己的 [Telegram API 凭证](https://my.telegram.org/apps)，完成登录。
+3. 在频道页选择已加入频道，搜索并勾选内容下载；也可以在下载任务页粘贴消息链接。
 
-- 收藏保存的是来源链接、分组、备注及本地文件引用，不会自动下载媒体。频道历史和本地文件的星标入口均可加入收藏夹。
-- 「停止加载」保留已浏览结果；「关闭浏览」清空当前频道页面。两者都不会取消已经加入队列的下载。
-- 收藏导出是 JSON 元数据备份，不包含媒体文件、API Hash、Telegram 会话或 Web 访问令牌。导入会合并新条目，并保留已有收藏的备注。
-- 删除收藏夹会把其中条目移到「未分类」；取消收藏不会删除文件。删除本地文件后，收藏仍保留来源，可再次下载。
-- 修改下载目录不会搬迁旧文件；旧目录的收藏会提示文件不可用。Web 版的保存目录指服务器上的绝对路径，下载到浏览器设备需使用文件页的下载按钮。
-- 自动下载类型只影响监听与补抓。手动选择的媒体仍可下载；现有文件不会因分类设置改变而自动重新整理。
+首个版本为预览版，安装包尚未进行 Windows 代码签名。安装程序支持简体中文和英语。覆盖安装会保留应用数据；需要单独备份收藏时，可先从设置导出收藏元数据。
 
-## 导航与窗口
+## 主要功能
 
-启动后直接进入频道，共五个主页面：频道、收藏夹、下载任务、本地文件、设置。账号与登录统一放在左下角。默认桌面窗口为 1100 × 760，内容列表在各自区域内滚动。
+- 直接选择已加入的频道，并按 Telegram 文件夹筛选。
+- 按关键词、视频 / 图片 / 音频 / 文件类型和指定日期搜索频道历史。
+- 手动下载队列、自动监听新内容和历史补抓。
+- 本地收藏夹支持分组、备注和 JSON 导入 / 导出。
+- 本地文件独立管理，下载后的媒体可预览，Web 视频支持拖动进度。
+- 自定义下载目录、媒体规则和分类方式；桌面关闭窗口可选择询问、托盘或退出。
 
-频道可直接从已加入列表中选择，按 Telegram 文件夹筛选，也可手动输入链接。历史搜索会向 Telegram 查询关键词、内容类型和指定日期，支持继续加载匹配结果，涵盖视频、图片、音频和文件。
+![频道浏览](.github/assets/channels.jpg)
 
-桌面版点击关闭按钮时，默认询问「最小化到托盘」或「退出软件」，可以取消，也可记住选择。托盘模式继续下载和监听；退出前保存未完成队列，下次启动恢复。关闭行为可在「设置 → 界面与后台」改回「每次询问」。
+![本地收藏夹](.github/assets/collections.jpg)
 
-## 上游接口与可扩展能力
+*截图均使用演示数据，未展示真实 Telegram 账号内容。*
 
-本项目通过 [grammers](https://github.com/Lonami/grammers) 直接连接 Telegram MTProto，当前固定到提交 `fa7692e49f301f16dc671c2f305ac1a32cad1a8e`，不依赖其他 Telegram 下载器的 API 服务。
+## Docker 部署
 
-| 能力 | 当前情况 | 可以继续改善的体验 |
-| --- | --- | --- |
-| 历史消息、媒体下载、缩略图、实时更新 | 已接入 | 每频道独立筛选规则、更完整的媒体详情 |
-| 会话列表 `messages.getDialogs`、Telegram 文件夹 `messages.getDialogFilters` | 已接入 | 登录后直接选择已加入的频道，按现有文件夹筛选 |
-| 频道服务端搜索 `messages.search` | 已接入 | 按关键词、类型、日期查询历史，并继续加载结果 |
-| 消息正文与 `grouped_id` | 已展示内容说明；相册分组尚未接入 | 相册合并、带来源的 JSON/HTML 消息导出 |
-| 上传、发消息、转发 | 上游支持，产品未接入 | 按需增加明确触发的发送工具；本地收藏仍保持本地 |
+已发布的镜像为 **Linux amd64**：`ghcr.io/r051/tg-grab`，包含完整 Web 页面和服务端。
 
-这些扩展仍受账号可访问范围、频道权限及 Telegram 限流约束；上游具备接口不代表产品界面已经实现。
-
-## 构建
-
-前置要求：[Rust](https://rustup.rs/)、Node.js 18+，Windows 需要 [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)（Win10/11 自带）。
-
-```bash
-npm install
-npm run tauri dev     # 开发
-npm run tauri build   # 发布安装包（NSIS/MSI）
+```sh
+git clone https://github.com/R051/tg-grab.git
+cd tg-grab
+docker compose pull
+docker compose up -d --no-build
+docker compose logs tg-grab
 ```
 
-## Web 服务 + Docker
+打开 `http://localhost:8080`，输入日志中显示的访问令牌，再在页面中配置 Telegram 账号。从其他电脑访问时，将 `localhost` 换成服务器地址。
 
-同一套代码也能以 **Web 服务**方式运行 —— 任何浏览器都能远程操作完整界面（NAS / 家庭服务器 / VPS）：
+| 镜像标签 | 用途 |
+| --- | --- |
+| `preview` | 跟随最新预览版，Compose 默认使用此标签 |
+| `0.1.0` | 固定到首个预览版 |
+| `sha-<commit>` | 固定到某次源码提交 |
 
-```bash
-# 本地运行（需先构建前端：npm run build）
-cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
-# → 启动时打印访问令牌，界面在 http://0.0.0.0:8080
+需要固定版本时，在本地 `.env` 中设置 `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.0`。更新当前使用的镜像时，执行 `docker compose pull` 和 `docker compose up -d --no-build`。
 
-# 或者用 Docker
+需要从源码构建时，执行：
+
+```sh
 docker compose up -d --build
 ```
 
-- 访问令牌首次启动自动生成并打印到控制台（同时存于 `data/config.json`），浏览器里输入一次即可（保存在 localStorage）
-- 下载、配置、Telegram 会话全部保存在挂载的 `/data` 卷
-- 拉取更新后，再执行 `docker compose up -d --build`，会同时重建 Web 页面和服务端；保留原有 `data` 目录即可继续使用。
-- 如需公网暴露，请加反向代理（Caddy/nginx）上 HTTPS
+配置、Telegram 会话、收藏和下载文件均保存在挂载的 `./data` 目录，升级时保留该目录。Web 版的下载目录指服务器路径，保存到浏览器设备需使用文件操作入口。向可信网络之外开放服务时，请配置 HTTPS 反向代理。
 
-## 获取 API 凭证
+## 收藏与文件
 
-tg-grab 使用你自己的 Telegram 账号走 MTProto 协议，需要**你自己的** API 凭证：
+收藏保存来源链接、分组、备注及可选的本地文件引用，不会自动下载媒体。导出内容不包含媒体文件、Telegram 会话、API Hash 或 Web 访问令牌；导入会合并条目，并保留已有备注。
 
-1. 打开 <https://my.telegram.org/apps> 登录
-2. 创建应用，复制 **API ID** 和 **API Hash**
-3. 在 tg-grab 的「设置」页填入（仅保存在本机应用数据目录，不会同步）
+删除收藏夹会将条目移到「未分类」；取消收藏不会删除文件。删除本地文件后，收藏仍保留来源链接。修改下载目录不会搬迁旧文件，旧目录的文件引用会显示不可用。
 
-> 不要使用网上流传的公共 api_id —— Telegram 在主动封禁它们，可能连累你的账号。
+「停止加载」保留浏览结果；「关闭浏览」清空当前频道，两者都不会取消已经加入队列的下载。
 
-## 受限频道 🔓
+## 开发与构建
 
-tg-grab 支持**开启了「禁止保存内容」**的频道——该限制由官方客户端界面执行，不影响 MTProto 协议层的文件传输。正常浏览历史、下载即可。
+需要 **Node.js 22.12+**、稳定版 Rust 和对应平台的编译工具。Windows 还需要 Microsoft C++ 构建工具及 WebView2。
 
-> 请尊重内容创作者。个人使用没有问题，但请勿批量搬运到其他频道。
+```sh
+npm ci
+npm run check:version
+npm test
+npm run build
+npm run tauri dev
+npm run tauri build -- --bundles nsis
+```
 
-## 说明
+运行本地 Web 服务：
 
-- 首次运行需登录一次（手机号 + 验证码 + 可选两步验证密码），会话保存在本地应用数据目录（`tggrab.session`）
-- 下载你自己客户端里能看到的内容没有任何问题；请遵守版权与 Telegram 服务条款
-- 短时限流自动等待；长时限流任务会失败并给出明确提示，稍后重试即可
-- Linux/macOS 构建未测试，理论上走标准 Tauri 流程即可
+```sh
+cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
+```
 
-## 免责声明
+自动检查、安装包验证、版本发布和依赖维护见 [CONTRIBUTING.md](CONTRIBUTING.md)。常规依赖会每周提出更新建议，固定的 grammers 提交单独验证后升级。
 
-本工具仅供**个人使用**。请仅下载你已加入的频道中的内容，并遵守版权法规和 Telegram 服务条款。作者不对滥用行为承担责任。
+项目使用 Rust、Tauri v2 和 Vue 3，通过 [grammers](https://github.com/Lonami/grammers) 直接连接 Telegram MTProto，不依赖其他下载器的 API 服务。
+
+## 反馈与说明
+
+- [反馈问题或提出建议](https://github.com/R051/tg-grab/issues/new/choose)，请附版本及使用方式，并先隐去日志、截图中的凭证和个人信息。
+- 需要自己的 API 凭证及账号访问权限，会话保存在本地，请勿使用泄露或共享的 API 凭证。
+- 自动下载类型规则只影响监听和补抓，手动选中的媒体仍可下载。
+- 短时限流自动等待；长时间等待会明确报错，可稍后重试。
+- 当前桌面安装包只提供 Windows x64，macOS / Linux 桌面版尚未验证。
+- 仅用于你有权访问的内容，尊重创作者、版权及 Telegram 服务条款，请勿未经许可传播他人内容。
 
 ## 许可
 

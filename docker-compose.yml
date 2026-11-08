@@ -1,5 +1,6 @@
 services:
   tg-grab:
+    image: ${TG_GRAB_IMAGE:-ghcr.io/r051/tg-grab:preview}
     build: .
     container_name: tg-grab
     ports:

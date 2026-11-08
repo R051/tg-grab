@@ -1,96 +1,107 @@
+<img src="public/brand/icon.svg" width="88" height="88" alt="tg-grab logo" />
+
 # tg-grab
 
-[中文说明](README.zh-CN.md)
+Download Telegram media and organize local collections. Available as a Windows desktop app and a self-hosted Web app.
 
-A native desktop app to download and organize Telegram media locally — built with **Rust + Tauri v2 + Vue 3**.
+[中文说明](README.zh-CN.md) · [Download Windows preview](https://github.com/R051/tg-grab/releases) · [Docker setup](#docker) · [Changelog](CHANGELOG.md)
 
-## Features
+[![CI](https://github.com/R051/tg-grab/actions/workflows/ci.yml/badge.svg)](https://github.com/R051/tg-grab/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/R051/tg-grab?include_prereleases)](https://github.com/R051/tg-grab/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- **📥 Manual downloads** — paste one or many `t.me` message links, with a live progress bar
-- **📡 Watch mode** — subscribe to channels/groups and download new content using your media-type rules
-- **🎞 History browser** — select joined channels by Telegram folder, search history by keyword/type/date, preview and select downloads
-- **Local collections** — folders, notes, search, and JSON import/export for channel, media-message and local-file favorites
-- **Local media library** — manage files separately from tasks, play downloaded video/audio, view photos and open sources
-- **Download preferences** — custom storage location, channel/date and media-type folders, separate auto-download filters
-- **Partial-file safety** — interrupted or rate-limited downloads are detected by size and re-downloaded cleanly
-- **Gentle by design** — sequential queue (configurable 1–4 workers), automatic flood-wait handling
-- **Bilingual UI** — 中文 / English, dark theme
-- **True native app** — single installer, no Python/Node runtime required
+## Windows
 
-## Collections and local files
+1. Download the **Windows x64 installer** from [Releases](https://github.com/R051/tg-grab/releases). `SHA256SUMS` is provided alongside it.
+2. Install and open tg-grab. In the bottom-left account entry, enter your own [Telegram API credentials](https://my.telegram.org/apps) and sign in.
+3. Choose a joined channel, search its history and select media to download, or paste message links into Downloads.
 
-Favorites store source links, notes, folders and optional local-file references. Saving a favorite does not download media. JSON exports contain collection metadata, excluding media bytes, API Hash, Telegram sessions and server tokens. Imports merge new entries while keeping existing notes.
+The first release is a preview and is not code-signed. The installer supports English and Simplified Chinese. Reinstalling keeps the application data; export collections from Settings before upgrading if you want a separate metadata backup.
 
-Stopping history loading retains results; closing browsing clears the current channel. Neither action cancels queued downloads. Removing a folder moves its favorites to Unfiled; removing a favorite keeps the file. Deleting a local file keeps its favorite and source link.
+## What it does
 
-Changing the download directory does not move existing files. Favorites from the previous root show as unavailable. In Web mode, this directory is on the server; use the file download action to save to the browser device. Auto-download type preferences apply to watchers and catch-up, while explicit manual selections remain downloadable. Directory rules apply to new downloads.
+- Select joined channels directly, including filters based on your Telegram folders.
+- Search media across channel history by keyword, type and optional day.
+- Download video, photos, audio and documents; manage a queue and monitor new channel posts.
+- Organize favorites into local folders with notes and JSON import/export.
+- Browse local files separately, preview downloaded media, and seek through videos in the Web app.
+- Choose a download directory, media rules and folder layout. On desktop, choose whether closing the window asks, minimizes to the tray or quits.
 
-## Navigation and window behavior
+![Channel browser](.github/assets/channels.jpg)
 
-The app opens on Channels, with five main sections: Channels, Collections, Downloads, Local files and Settings. Account and sign-in share one entry in the sidebar footer. The default desktop window is 1100 × 760; content lists scroll within their own regions.
+![Local collections](.github/assets/collections.jpg)
 
-Choose a joined channel directly, optionally filtered by your Telegram folders, or enter a link. History searches query Telegram by keyword, media type and optional day, with pagination through matching results. Videos, photos, audio and documents are supported.
+*Screenshots use demonstration data, not a real Telegram account.*
 
-Closing the desktop window asks whether to minimize to the tray or quit. You can cancel or remember the choice. Tray mode keeps downloads and monitoring running; quitting saves unfinished tasks for the next launch. Change this under Settings → Interface and background.
+## Docker
 
-## Upstream capabilities
+The published image is **Linux amd64**: `ghcr.io/r051/tg-grab`. The Web app and backend are included in the same image.
 
-tg-grab connects directly to Telegram MTProto through [grammers](https://github.com/Lonami/grammers), pinned to `fa7692e49f301f16dc671c2f305ac1a32cad1a8e`. History, media downloads, thumbnails, live updates, dialog lists, Telegram folders and server-side message search are integrated. Message captions are shown in browsing results. Album grouping, message exports, uploads and forwarding are not implemented. All workflows remain subject to account access, permissions and Telegram rate limits.
-
-## Build
-
-Prerequisites: [Rust](https://rustup.rs/), Node.js 18+, and on Windows the [WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Win 10/11).
-
-```bash
-npm install
-npm run tauri dev     # development
-npm run tauri build   # release installer (NSIS/MSI)
+```sh
+git clone https://github.com/R051/tg-grab.git
+cd tg-grab
+docker compose pull
+docker compose up -d --no-build
+docker compose logs tg-grab
 ```
 
-## Web server + Docker
+Open `http://localhost:8080` and enter the access token printed in the logs. Configure your Telegram account in the Web UI. On another computer, use the server's address instead of `localhost`.
 
-The same binary codebase also runs as a **web server** — access the full UI from any browser (NAS / home server / VPS):
+| Tag | Purpose |
+| --- | --- |
+| `preview` | Current preview channel; used by Compose by default |
+| `0.1.0` | Fixed first-preview version |
+| `sha-<commit>` | Image built from a specific source commit |
 
-```bash
-# local run (frontend must be built once: npm run build)
-cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
-# → prints the access token, UI at http://0.0.0.0:8080
+To pin a version, set `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.0` in a local `.env` file. To update the selected channel, run `docker compose pull` followed by `docker compose up -d --no-build`.
 
-# or with Docker
+To build from source instead:
+
+```sh
 docker compose up -d --build
 ```
 
-- The access token is auto-generated on first boot and printed to the console (also stored in `data/config.json`). Enter it once in the browser — it is kept in localStorage.
-- All downloads, config and the Telegram session live in the mounted `/data` volume.
-- After pulling updates, run `docker compose up -d --build` again to rebuild both the Web UI and server. Keep the existing `data` directory.
-- Put it behind a reverse proxy (Caddy/nginx) for HTTPS if exposing beyond your LAN.
+All configuration, Telegram sessions, collections and downloads stay in the mounted `./data` directory. Keep it when upgrading. In the Web edition, download paths refer to the server; use the file action to save a copy to your browser device. Use an HTTPS reverse proxy when exposing the service beyond a trusted network.
 
-## Getting API credentials
+## Collections and files
 
-tg-grab speaks MTProto with your own Telegram account, so it needs **your** API credentials:
+Saving a favorite stores a source link, folder, notes and optional local-file reference; it does not download media. Collection exports exclude media bytes, Telegram sessions, API Hash and Web access tokens. Imports merge entries while preserving existing notes.
 
-1. Open <https://my.telegram.org/apps> and sign in
-2. Create an app and copy the **API ID** and **API Hash**
-3. Enter them in tg-grab's Settings tab (stored locally in the app data folder, never synced)
+Removing a folder moves its favorites to Unfiled. Removing a favorite keeps its file. Deleting a local file keeps the favorite and source link. Changing the download directory does not move existing files; references to a previous root show as unavailable.
 
-> Don't use leaked/shared api_ids floating around the internet — Telegram actively blocks them, and your account may be affected.
+Stopping history loading retains results. Closing browsing clears the current channel. Both leave queued downloads running.
 
-## Restricted channels 🔓
+## Build and contribute
 
-tg-grab works with channels that have **Restrict Saving Content** enabled — the restriction is enforced by the official client UI, not by the MTProto protocol. Browse the channel's history and download as usual.
+Use **Node.js 22.12+**, stable Rust, and the platform's native build tools. Windows needs Microsoft C++ build tools and WebView2.
 
-> Please respect content creators. Personal use is fine — mass redistribution is not what this tool is for.
+```sh
+npm ci
+npm run check:version
+npm test
+npm run build
+npm run tauri dev
+npm run tauri build -- --bundles nsis
+```
 
-## Notes & limits
+For a local Web server:
 
-- First run requires a one-time login (phone + code + optional 2FA password). The session is stored locally (`app data dir/tggrab.session`).
-- Downloading content you can already see in your own client is fine; respect copyright and Telegram's ToS.
-- Rate limits (FLOOD_WAIT) are handled automatically for short waits; long waits fail the task with a clear message — retry later.
-- Linux/macOS builds are untested but should work via standard Tauri cross-platform flow.
+```sh
+cargo run --release --manifest-path src-tauri/Cargo.toml --bin tg-grab-server --no-default-features --features server
+```
 
-## Disclaimer
+See [CONTRIBUTING.md](CONTRIBUTING.md) for automated checks, installer verification and version publishing. Dependency updates are proposed weekly; the pinned grammers revision is reviewed separately.
 
-This tool is for **personal use only**. Download content from channels you are a member of, and respect copyright and Telegram's Terms of Service. The authors are not responsible for misuse.
+The project uses Rust, Tauri v2 and Vue 3. It connects to Telegram MTProto through [grammers](https://github.com/Lonami/grammers), rather than another downloader's API.
+
+## Support and limits
+
+- [Report a bug or suggest a feature](https://github.com/R051/tg-grab/issues/new/choose). Include the version and whether you use desktop, Web or Docker; remove credentials and personal information from logs.
+- Your own Telegram API credentials and account access are required. The session is stored locally. Do not use leaked/shared credentials.
+- Automatic download rules apply to monitoring and catch-up; explicitly selected media can still be downloaded.
+- Short Telegram rate limits are handled automatically; longer waits are reported so you can retry later.
+- Published desktop installers currently target Windows x64. macOS and Linux desktop builds are not verified.
+- Use the tool for content you may access and respect creators, copyright and Telegram's terms. Do not redistribute other people's content without permission.
 
 ## License
 

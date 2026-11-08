@@ -11,5 +11,7 @@ queue.json
 library.json
 .git
 .vscode
+.env
+.env.*
 docs
 *.log
