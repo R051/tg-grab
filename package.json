@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test tests/frontend.test.cjs",
+    "check:version": "node scripts/check-version.mjs",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
@@ -24,5 +25,8 @@
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vue-tsc": "^3.3.5"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

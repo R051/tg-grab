@@ -1,7 +1,9 @@
 [package]
 name = "tg-grab"
 version = "0.1.0"
-description = "Telegram channel video downloader"
+description = "Telegram media downloader and local collections"
+license = "MIT"
+repository = "https://github.com/R051/tg-grab"
 authors = ["bryan"]
 edition = "2024"
 default-run = "tg-grab"

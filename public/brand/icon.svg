@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="tg-grab">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#101c32"/><stop offset="0.52" stop-color="#080f21"/><stop offset="1" stop-color="#15132e"/>
+  </linearGradient>
+  <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#79d7ff"/><stop offset="0.45" stop-color="#35b6fc"/><stop offset="1" stop-color="#2389f5"/>
+  </linearGradient>
+  <linearGradient id="sheet" x1="0.15" y1="0" x2="0.8" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="0.58" stop-color="#f7f8ff"/><stop offset="1" stop-color="#e8edff"/>
+  </linearGradient>
+  <linearGradient id="wingTop" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="0.7" stop-color="#faf7ff"/><stop offset="1" stop-color="#dbccff"/>
+  </linearGradient>
+  <linearGradient id="purple" x1="0" y1="0.1" x2="1" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#c7adff"/><stop offset="0.38" stop-color="#a875f9"/><stop offset="0.8" stop-color="#8b5bec"/><stop offset="1" stop-color="#7852e5"/>
+  </linearGradient>
+  <linearGradient id="innerWing" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#e4d9ff"/><stop offset="1" stop-color="#b895ff"/>
+  </linearGradient>
+  <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f5f8ff"/>
+  </linearGradient>
+</defs>
+<rect x="0" y="0" width="512" height="512" rx="106" fill="url(#bg)"/>
+<rect x="9" y="9" width="494" height="494" rx="97" fill="none" stroke="#5d79b0" stroke-opacity="0.16" stroke-width="2"/>
+<g id="tg-grab-mark">
+  <!-- White download arrow -->
+  <path d="M 238 68 Q 238 64 243 64 H 271 Q 276 64 276 69 V 136 H 319 Q 323 136 320 141 L 261 208 Q 257 212 253 208 L 194 141 Q 190 136 197 136 H 238 Z"
+        fill="url(#arrow)" />
+
+  <!-- Cyan saved-items / media layers -->
+  <path d="M 130 336 L 242 396 Q 257 405 272 397 L 390 335 Q 402 328 412 338 Q 424 350 411 363 Q 409 366 402 371 L 276 450 Q 259 462 242 452 L 112 379 Q 99 371 105 356 Q 108 349 118 342 Z"
+        fill="url(#blue)"/>
+  <path d="M 116 359 L 242 428 Q 258 437 274 428 L 404 352" stroke="#8cdeff" stroke-opacity=".17" stroke-width="3" fill="none"/>
+
+  <!-- White top sheet, slightly floating above the blue layer -->
+  <path d="M 108 271 L 149 246 Q 157 241 164 245 L 245 292 Q 257 300 272 291 L 385 235 L 408 266 Q 424 277 414 289 Q 412 292 407 294 L 275 371 Q 258 382 242 373 L 108 296 Q 94 288 99 279 Q 101 275 108 271 Z"
+        fill="url(#sheet)"/>
+  <path d="M 107 290 L 247 369 Q 257 375 269 368 L 408 286" stroke="#a1b8eb" stroke-opacity=".3" stroke-width="2.5" fill="none"/>
+
+  <!-- The paper plane: white swept left wing -->
+  <path d="M 160 254 L 354 192 Q 366 188 368 199 Q 369 204 366 209 L 226 294 Z"
+        fill="url(#wingTop)"/>
+  <path d="M 167 257 L 351 199 L 225 288 Z" fill="#ffffff" opacity=".5"/>
+
+  <!-- Folded underside, visibly lilac to imply a paper plane -->
+  <path d="M 226 294 L 365 204 Q 366 222 353 240 L 281 343 L 252 313 L 226 336 Z"
+        fill="url(#purple)"/>
+  <!-- inner fold along the plane -->
+  <path d="M 226 294 L 344 217 L 248 309 L 225 342 Z" fill="url(#innerWing)"/>
+  <path d="M 244 309 L 345 216 L 272 299 Q 259 313 281 343 L 252 314 Z" fill="#b995ff" opacity=".5"/>
+  <path d="M 226 294 L 365 203" stroke="#e1d4ff" stroke-opacity=".68" stroke-width="2.5" fill="none"/>
+</g>
+</svg>

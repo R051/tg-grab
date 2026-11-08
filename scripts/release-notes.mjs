@@ -1,0 +1,10 @@
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+assert.equal(process.argv[2], `v${version}`, 'Release tag must match the app version');
+const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+const marker = `## [${version}]`;
+const start = changelog.indexOf(marker);
+assert.ok(start >= 0, `Missing changelog entry for ${version}`);
+const entry = changelog.slice(start).split(/\r?\n## /)[0];
+console.log(entry.replace(/^## [^\n]+\r?\n/, '').trim());

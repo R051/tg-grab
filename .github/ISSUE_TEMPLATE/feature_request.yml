@@ -1,0 +1,16 @@
+name: 功能建议 / Feature request
+description: 描述你希望改善的使用体验
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 当前遇到什么不便？ / What is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎样改进？ / Suggested improvement
+    validations:
+      required: true

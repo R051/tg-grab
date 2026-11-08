@@ -1,0 +1,120 @@
+name: Release Windows preview
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build
+        required: true
+        default: v0.1.0
+      prerelease:
+        description: Publish as a preview
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
+  windows:
+    name: Package Windows x64
+    needs: checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri -> target
+          shared-key: desktop
+      - run: npm ci
+      - run: node scripts/check-version.mjs "$env:RELEASE_TAG"
+      - run: npm run tauri build -- --bundles nsis
+      - name: Verify fresh installation and reinstall
+        shell: pwsh
+        run: ./scripts/verify-windows-install.ps1
+      - name: Prepare installer and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets | Out-Null
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer" }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets
+          $installer = Get-Item (Join-Path release-assets $installers[0].Name)
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content release-assets/SHA256SUMS -Encoding utf8NoBOM
+          node scripts/release-notes.mjs "$env:RELEASE_TAG" | Set-Content release-assets/RELEASE_NOTES.md -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-release
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish preview and start image build
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      PREVIEW: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-release
+          path: release-assets
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const preview = process.env.PREVIEW === 'true';
+            const body = fs.readFileSync('release-assets/RELEASE_NOTES.md', 'utf8');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({ owner, repo, tag_name: tag,
+                name: `tg-grab ${tag}${preview ? ' Preview / 预览版' : ''}`,
+                body, draft: true, prerelease: preview })).data;
+            }
+            if (release.draft) {
+              for (const name of fs.readdirSync('release-assets').filter(name => name.endsWith('.exe') || name === 'SHA256SUMS')) {
+                const previous = release.assets.find(asset => asset.name === name);
+                if (previous) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: previous.id });
+                await github.rest.repos.uploadReleaseAsset({ owner, repo, release_id: release.id, name,
+                  data: fs.readFileSync(`release-assets/${name}`) });
+              }
+              release = (await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
+                draft: false, prerelease: preview, body })).data;
+            }
+            core.notice(`Release ready: ${release.html_url}`);
+            await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'docker.yml',
+              ref: context.payload.repository.default_branch,
+              inputs: { tag, channel: preview ? 'preview' : 'latest' } });

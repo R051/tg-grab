@@ -1,0 +1,39 @@
+name: 问题反馈 / Bug report
+description: 报告异常、下载失败或界面问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请勿上传 Telegram 会话文件、API Hash、验证码、密码或 Web 访问令牌。截图和日志请先隐去个人信息。
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本 / Version
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: edition
+    attributes:
+      label: 使用方式 / Edition
+      options: [Windows 桌面版, Docker, 本地 Web 服务]
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与浏览器 / Environment
+      placeholder: Windows 11 / Ubuntu amd64 + Chrome
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 如何复现 / Steps to reproduce
+      description: 描述操作步骤、预期结果和实际结果。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或截图 / Sanitized logs or screenshots
