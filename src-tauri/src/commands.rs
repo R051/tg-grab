@@ -156,6 +156,16 @@ pub async fn clear_thumbs(st: State<'_, SharedState>) -> Result<api::ClearedThum
 }
 
 #[tauri::command]
+pub async fn queue_pause(st: State<'_, SharedState>, id: u64) -> Result<(), String> {
+    api::queue_pause(&st, id).await
+}
+
+#[tauri::command]
+pub async fn queue_resume(st: State<'_, SharedState>, id: u64) -> Result<(), String> {
+    api::queue_resume(&st, id).await
+}
+
+#[tauri::command]
 pub async fn queue_cancel(st: State<'_, SharedState>, id: u64) -> Result<(), String> {
     api::queue_cancel(&st, id).await
 }

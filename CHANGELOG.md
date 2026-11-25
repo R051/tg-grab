@@ -1,5 +1,13 @@
 # 更新记录 / Changelog
 
+## [0.1.3] - 2026-11-26
+
+- 下载任务新增「暂停 / 继续」与「取消」：暂停保留已下分片并支持断点续传，取消直接移出列表并清理 `.part` 临时文件。
+- 「本地文件」与「下载任务」新增下载时间展示，默认按最新下载时间排序。
+- 「下载任务」完成行与「本地文件」列表行新增直观的「打开位置」按钮，无需先打开预览弹窗即可定位文件。
+
+Downloads now support pause/resume (keeping completed chunks) and cancel (removing the task and cleaning up `.part` temporary files). Both Local Files and Downloads display timestamps and sort newest-first by default, with direct "Show in folder" buttons on completed tasks and file rows.
+
 ## [0.1.2] - 2026-11-08
 
 - 设置新增“关于”：展示作者 R051、当前版本和完整仓库地址，Logo 居中。

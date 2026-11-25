@@ -6,17 +6,62 @@ use grammers_client::Client;
 use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_mtsender::SenderPoolFatHandle;
 use grammers_session::storages::SqliteSession;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc, watch};
+
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    Pause,
+    Cancel,
+}
 
 /// One job waiting in (or being processed by) the download queue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Job {
     pub id: u64,
     pub url: String,
+    #[serde(default = "now_ms")]
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub current: u64,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_path: Option<PathBuf>,
+}
+
+/// A paused job persisted with partial progress so it can be resumed later.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PausedTask {
+    pub id: u64,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub current: u64,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub percent: f64,
+    #[serde(default = "now_ms")]
+    pub created_at: i64,
+    #[serde(default = "now_ms")]
+    pub paused_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_path: Option<PathBuf>,
 }
 
 /// Snapshot of the currently downloading item, pushed to the frontend.
@@ -29,6 +74,13 @@ pub struct ActiveTask {
     pub current: u64,
     pub total: u64,
     pub percent: f64,
+    pub created_at: i64,
+    pub started_at: i64,
+}
+
+pub struct InFlightControl {
+    pub stop_tx: watch::Sender<Option<StopReason>>,
+    pub done_notify: Arc<Notify>,
 }
 
 pub struct QueueState {
@@ -37,8 +89,13 @@ pub struct QueueState {
     /// The job currently being downloaded (journalled so a restart can
     /// re-queue it instead of losing it).
     pub in_flight: Mutex<BTreeMap<u64, Job>>,
-    /// Jobs the user asked to cancel (checked by the writer loop).
+    /// Jobs paused by the user, persisted alongside pending jobs.
+    pub paused: Mutex<BTreeMap<u64, PausedTask>>,
+    /// Stop signal & completion notifier for active in-flight tasks.
+    pub controls: std::sync::Mutex<HashMap<u64, InFlightControl>>,
+    /// Legacy cancel flag fallback (if needed); controls is primary.
     pub cancel_flags: std::sync::Mutex<std::collections::HashSet<u64>>,
+    pub wake: Notify,
     /// Where the pending-journal lives (set at startup).
     pub path: PathBuf,
     /// yt-dlp style archive of downloaded items (one key per line).
@@ -58,7 +115,10 @@ impl QueueState {
             next_id: AtomicU64::new(1),
             pending: Mutex::new(VecDeque::new()),
             in_flight: Mutex::new(BTreeMap::new()),
+            paused: Mutex::new(BTreeMap::new()),
+            controls: std::sync::Mutex::new(HashMap::new()),
             cancel_flags: std::sync::Mutex::new(std::collections::HashSet::new()),
+            wake: Notify::new(),
             path,
             active: Mutex::new(BTreeMap::new()),
             results: Mutex::new(Vec::new()),
@@ -68,21 +128,23 @@ impl QueueState {
         }
     }
 
-    /// Write the pending + in-flight jobs to disk so a restart can restore them.
+    /// Write the pending + in-flight + paused jobs to disk so a restart can restore them.
     pub async fn persist(&self, path: &std::path::Path) {
         let _writer = self.persist_lock.lock().await;
         let pending = self.pending.lock().await;
         let inflight = self.in_flight.lock().await;
-        let mut list: Vec<serde_json::Value> = Vec::new();
-        for j in inflight.values() {
-            list.push(serde_json::json!({"id": j.id, "url": j.url}));
-        }
-        for j in pending.iter() {
-            list.push(serde_json::json!({"id": j.id, "url": j.url}));
-        }
+        let paused = self.paused.lock().await;
+        let mut jobs: Vec<Job> = Vec::with_capacity(inflight.len() + pending.len());
+        jobs.extend(inflight.values().cloned());
+        jobs.extend(pending.iter().cloned());
+        let paused_list: Vec<PausedTask> = paused.values().cloned().collect();
+        drop(paused);
         drop(inflight);
         drop(pending);
-        let json = serde_json::json!({ "jobs": list });
+        let json = serde_json::json!({
+            "jobs": jobs,
+            "paused": paused_list,
+        });
         let tmp = path.with_extension("json.tmp");
         let result = std::fs::write(&tmp, serde_json::to_vec(&json).unwrap_or_default())
             .and_then(|_| std::fs::rename(&tmp, path));
@@ -91,28 +153,142 @@ impl QueueState {
         }
     }
 
+    /// Restore pending & paused tasks from disk, preserving IDs & timestamps.
+    pub async fn restore(&self, path: &std::path::Path) {
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return;
+        };
+        let mut max_id = 0u64;
+        let mut seen_urls = HashSet::new();
+        let mut restored_pending = VecDeque::new();
+        let mut restored_paused = BTreeMap::new();
+        let fallback_now = now_ms();
+
+        if let Some(paused) = v.get("paused").and_then(|p| p.as_array()) {
+            for entry in paused {
+                let Ok(mut task) = serde_json::from_value::<PausedTask>(entry.clone()) else {
+                    continue;
+                };
+                if task.url.is_empty() || !seen_urls.insert(task.url.clone()) {
+                    continue;
+                }
+                if task.id == 0 {
+                    max_id += 1;
+                    task.id = max_id;
+                } else {
+                    max_id = max_id.max(task.id);
+                }
+                restored_paused.insert(task.id, task);
+            }
+        }
+
+        if let Some(jobs) = v.get("jobs").and_then(|j| j.as_array()) {
+            for entry in jobs {
+                if let Ok(mut job) = serde_json::from_value::<Job>(entry.clone()) {
+                    if job.url.is_empty() || !seen_urls.insert(job.url.clone()) {
+                        continue;
+                    }
+                    if job.id == 0 {
+                        max_id += 1;
+                        job.id = max_id;
+                    } else {
+                        max_id = max_id.max(job.id);
+                    }
+                    restored_pending.push_back(job);
+                } else if let Some(url) = entry.get("url").and_then(|u| u.as_str()) {
+                    if url.is_empty() || !seen_urls.insert(url.to_string()) {
+                        continue;
+                    }
+                    let id = entry
+                        .get("id")
+                        .and_then(|x| x.as_u64())
+                        .filter(|&x| x > 0)
+                        .unwrap_or_else(|| {
+                            max_id += 1;
+                            max_id
+                        });
+                    max_id = max_id.max(id);
+                    restored_pending.push_back(Job {
+                        id,
+                        url: url.to_string(),
+                        created_at: fallback_now,
+                        name: None,
+                        current: 0,
+                        total: 0,
+                        percent: 0.0,
+                        part_path: None,
+                    });
+                }
+            }
+        }
+
+        if !restored_pending.is_empty() || !restored_paused.is_empty() {
+            *self.pending.lock().await = restored_pending;
+            *self.paused.lock().await = restored_paused;
+            let next = max_id.saturating_add(1);
+            self.next_id
+                .fetch_max(next, std::sync::atomic::Ordering::SeqCst);
+            log::info!("restored download queue state");
+        }
+    }
+
     pub async fn enqueue(&self, urls: Vec<String>) -> Vec<u64> {
         let mut ids = Vec::with_capacity(urls.len());
         {
             let mut pending = self.pending.lock().await;
             let inflight = self.in_flight.lock().await;
+            let mut paused = self.paused.lock().await;
             let mut seen: HashSet<String> = pending
                 .iter()
                 .chain(inflight.values())
                 .map(|job| job.url.clone())
                 .collect();
+            let now = now_ms();
             for url in urls {
                 if !seen.insert(url.clone()) {
                     continue;
                 }
+                if let Some(paused_id) = paused
+                    .iter()
+                    .find(|(_, task)| task.url == url)
+                    .map(|(id, _)| *id)
+                {
+                    if let Some(task) = paused.remove(&paused_id) {
+                        pending.push_back(Job {
+                            id: task.id,
+                            url: task.url,
+                            created_at: task.created_at,
+                            name: task.name,
+                            current: task.current,
+                            total: task.total,
+                            percent: task.percent,
+                            part_path: task.part_path,
+                        });
+                        ids.push(task.id);
+                        continue;
+                    }
+                }
                 let id = self
                     .next_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                pending.push_back(Job { id, url });
+                pending.push_back(Job {
+                    id,
+                    url,
+                    created_at: now,
+                    name: None,
+                    current: 0,
+                    total: 0,
+                    percent: 0.0,
+                    part_path: None,
+                });
                 ids.push(id);
             }
         }
         self.persist(&self.path).await;
+        self.wake.notify_waiters();
         ids
     }
 }

@@ -93,7 +93,7 @@ const grouped = computed(() => {
   return [...groups.values()];
 });
 const taskStates = computed(() => {
-  const states = new Map<string, "queued" | "downloading" | "success">();
+  const states = new Map<string, "queued" | "paused" | "downloading" | "success">();
   for (const result of store.results) {
     if (
       result.status === "success" &&
@@ -102,6 +102,7 @@ const taskStates = computed(() => {
       states.set(result.url, "success");
     }
   }
+  for (const paused of store.paused ?? []) states.set(paused.url, "paused");
   for (const pending of store.pending) states.set(pending.url, "queued");
   for (const active of store.activeTasks) states.set(active.url, "downloading");
   return states;

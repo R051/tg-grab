@@ -90,21 +90,8 @@ pub async fn init_core(data_dir: std::path::PathBuf) -> SharedState {
         queue: state::QueueState::new(queue_path),
     });
 
-    // Restore pending download tasks from the previous session.
-    if let Ok(bytes) = std::fs::read(&st.queue_path) {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let Some(jobs) = v.get("jobs").and_then(|j| j.as_array()) {
-                let urls: Vec<String> = jobs
-                    .iter()
-                    .filter_map(|j| j.get("url").and_then(|u| u.as_str()).map(String::from))
-                    .collect();
-                if !urls.is_empty() {
-                    st.queue.enqueue(urls).await;
-                    log::info!("restored pending download tasks");
-                }
-            }
-        }
-    }
+    // Restore pending and paused download tasks from the previous session.
+    st.queue.restore(&st.queue_path).await;
 
     tg::queue::spawn_workers(st.clone()).await;
     tg::watcher::spawn(st.clone());
@@ -143,6 +130,8 @@ pub mod desktop {
                 crate::commands::download_urls,
                 crate::commands::get_queue,
                 crate::commands::queue_move,
+                crate::commands::queue_pause,
+                crate::commands::queue_resume,
                 crate::commands::queue_cancel,
                 crate::commands::clear_thumbs,
                 crate::commands::list_files,

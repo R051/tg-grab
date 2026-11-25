@@ -54,6 +54,8 @@ pub struct DownloadRecord {
     pub root: PathBuf,
     pub size: u64,
     pub kind: String,
+    #[serde(default)]
+    pub downloaded_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -597,6 +599,7 @@ mod tests {
                 root: state.downloads_root().await,
                 size: 4,
                 kind: "video".into(),
+                downloaded_at: Some(1_700_000_000_000),
             },
         )
         .await

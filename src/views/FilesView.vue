@@ -3,8 +3,9 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { NInput, NSelect, NButton, useMessage, useDialog } from "naive-ui";
 import { useAppStore } from "../stores/app";
+import { fileUrl, invoke, isDesktop } from "../lib/backend";
 import { errorText } from "../lib/errors";
-import { formatSize, mediaIcon, findFavorite } from "../lib/library";
+import { formatSize, formatTime, mediaIcon, findFavorite } from "../lib/library";
 import type { DownloadedFile, FavoriteDraft, MediaDetails } from "../types";
 import AppIcon from "../components/AppIcon.vue";
 import FavoriteDialog from "../components/FavoriteDialog.vue";
@@ -15,7 +16,7 @@ const message = useMessage();
 const dialog = useDialog();
 const search = ref("");
 const kind = ref("all");
-const sort = ref("name");
+const sort = ref<"time" | "timeAsc" | "size" | "name">("time");
 const refreshing = ref(false);
 const preview = ref<MediaDetails | null>(null);
 const favorite = ref<FavoriteDraft | null>(null);
@@ -27,23 +28,30 @@ const kinds = computed(() => [
   })),
 ]);
 const sorts = computed(() => [
-  { label: t("files.byName"), value: "name" },
+  { label: t("files.byTime"), value: "time" },
+  { label: t("files.byTimeOldest"), value: "timeAsc" },
   { label: t("files.bySize"), value: "size" },
+  { label: t("files.byName"), value: "name" },
 ]);
 const files = computed(() =>
-  store.files
+  (store.files ?? [])
     .filter(
       (file) =>
         (kind.value === "all" || file.kind === kind.value) &&
         file.name.toLowerCase().includes(search.value.trim().toLowerCase()),
     )
     .slice()
-    .sort((a, b) =>
-      sort.value === "size" ? b.size - a.size : a.name.localeCompare(b.name),
-    ),
+    .sort((a, b) => {
+      if (sort.value === "size") return b.size - a.size || a.name.localeCompare(b.name);
+      if (sort.value === "name") return a.name.localeCompare(b.name);
+      const ta = a.downloadedAt ?? 0;
+      const tb = b.downloadedAt ?? 0;
+      if (sort.value === "timeAsc") return ta - tb || a.name.localeCompare(b.name);
+      return tb - ta || a.name.localeCompare(b.name);
+    }),
 );
 const totalSize = computed(() =>
-  store.files.reduce((sum, file) => sum + file.size, 0),
+  (store.files ?? []).reduce((sum, file) => sum + file.size, 0),
 );
 function details(file: DownloadedFile): MediaDetails {
   return {
@@ -54,6 +62,18 @@ function details(file: DownloadedFile): MediaDetails {
     localRoot: store.settings?.effective_downloads_dir,
     size: file.size,
   };
+}
+async function revealFile(file: DownloadedFile) {
+  try {
+    if (isDesktop) {
+      await invoke("reveal_file", { name: file.name });
+    } else {
+      const url = fileUrl(file.name);
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    }
+  } catch (error) {
+    message.error(errorText(error, t));
+  }
 }
 function remove(file: DownloadedFile) {
   dialog.warning({
@@ -140,9 +160,21 @@ async function refresh() {
           ><span class="row-body"
             ><span class="file-name">{{ file.name.split("/").pop() }}</span
             ><span class="file-directory"
-              >{{ file.name }} · {{ formatSize(file.size) }}</span
+              >{{ file.name }} · {{ formatSize(file.size)
+              }}<template v-if="formatTime(file.downloadedAt)">
+                · {{ formatTime(file.downloadedAt) }}</template
+              ></span
             ></span
           ></button
+        ><button
+          class="ghost-btn row-action file-reveal"
+          :title="isDesktop ? t('library.reveal') : t('library.downloadDevice')"
+          @click="revealFile(file)"
+        >
+          <AppIcon :name="isDesktop ? 'folderOpen' : 'download'" :size="14" />
+          <span>{{
+            isDesktop ? t("download.openFolder") : t("library.downloadDevice")
+          }}</span></button
         ><button
           class="icon-button"
           :class="{
@@ -192,6 +224,11 @@ async function refresh() {
 }
 .file-entry {
   padding: 6px 8px;
+}
+.file-reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 .file-main {
   display: flex;

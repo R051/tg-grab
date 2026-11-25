@@ -89,7 +89,9 @@ const navs = computed(() => [
     key: "download",
     label: t("app.tabs.download"),
     icon: "download",
-    badge: store.pending.length + store.activeTasks.length || null,
+    badge:
+      store.pending.length + store.activeTasks.length + store.paused.length ||
+      null,
     disabled: false,
   },
   {

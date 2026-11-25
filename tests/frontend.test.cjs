@@ -242,3 +242,74 @@ test('channel picker discards the old account list after logout',async()=>{
  store.authorized=false;store.user=null;await vue.nextTick();pending.resolve({channels:[{rawId:1,title:'old',url:'old',folderIds:[]}],folders:[],foldersError:null,truncated:false});await tick();
  assert.equal(picker.directory.value.channels.length,0);assert.equal(picker.loading.value,false);
 });
+
+test('download view sorts newest first by default and triggers pause, resume, cancel, and reveal_file', async()=>{
+  const calls=[];
+  const store=vue.reactive({
+    authorized:true,
+    pending:[{id:1,url:'https://t.me/demo/1',createdAt:1000}],
+    paused:[{id:2,url:'https://t.me/demo/2',name:'paused.mp4',current:50,total:100,percent:50,createdAt:900,pausedAt:3000}],
+    activeTasks:[{id:3,url:'https://t.me/demo/3',name:'active.mp4',current:10,total:100,percent:10,createdAt:800,startedAt:2000}],
+    results:[{id:4,url:'https://t.me/demo/4',status:'success',name:'done.mp4',path:'done.mp4',size:100,createdAt:700,completedAt:4000}],
+    files:[],
+    speeds:{3:10},
+    refreshQueue:async()=>{},
+  });
+  const desktopView = (() => {
+    const messages=[];
+    const exports=load('src/views/DownloadView.vue',{
+      'vue':{...vue,onUnmounted:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{}},
+      '../lib/backend':{invoke:async(cmd,args)=>{calls.push({cmd,args});return null;},isDesktop:true,fileUrl:()=>null},
+      '../lib/library':load('src/lib/library.ts',{'./backend':{invoke:async()=>null,isDesktop:true,fileUrl:()=>null}}),
+      '../lib/errors':load('src/lib/errors.ts'),
+      '../stores/app':{useAppStore:()=>store},
+      'vue-i18n':{useI18n:()=>({t:k=>k,locale:vue.ref('zh-CN')})},
+      'naive-ui':{useMessage:()=>Object.fromEntries(['success','error','info','warning'].map(k=>[k,(...a)=>messages.push([k,...a])]))},
+    },['taskRows','sortOrder','pauseTask','resumeTask','cancelTask','openFile']);
+    return {...exports,messages};
+  })();
+  assert.equal(desktopView.sortOrder.value,'timeDesc');
+  assert.deepEqual([...desktopView.taskRows.value.map(r=>r.id)],[4,2,3,1]);
+  desktopView.sortOrder.value='timeAsc';
+  assert.deepEqual([...desktopView.taskRows.value.map(r=>r.id)],[1,3,2,4]);
+  desktopView.sortOrder.value='queue';
+  assert.deepEqual([...desktopView.taskRows.value.map(r=>r.kind)],['active','paused','queued','success']);
+  await desktopView.pauseTask(desktopView.taskRows.value[0]);
+  await desktopView.resumeTask(desktopView.taskRows.value[1]);
+  await desktopView.cancelTask(desktopView.taskRows.value[2]);
+  await desktopView.openFile('done.mp4');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[
+    {cmd:'queue_pause',args:{id:3}},
+    {cmd:'queue_resume',args:{id:2}},
+    {cmd:'queue_cancel',args:{id:1}},
+    {cmd:'reveal_file',args:{name:'done.mp4'}},
+  ]);
+});
+
+test('files view defaults to newest download time and reveals files directly', async()=>{
+  const calls=[];
+  const store=vue.reactive({
+    files:[
+      {name:'old.mp4',size:200,kind:'video',downloadedAt:1000},
+      {name:'new.mp4',size:100,kind:'video',downloadedAt:3000},
+    ],
+    settings:{effective_downloads_dir:'C:/downloads'},
+    library:{folders:[],items:[]},
+  });
+  const filesView=load('src/views/FilesView.vue',{
+    'vue':{...vue,onUnmounted:()=>{},onMounted:()=>{},onBeforeUnmount:()=>{}},
+    '../lib/backend':{invoke:async(cmd,args)=>{calls.push({cmd,args});return null;},isDesktop:true,fileUrl:()=>null},
+    '../lib/library':load('src/lib/library.ts',{'./backend':{invoke:async()=>null,isDesktop:true,fileUrl:()=>null}}),
+    '../lib/errors':load('src/lib/errors.ts'),
+    '../stores/app':{useAppStore:()=>store},
+    'vue-i18n':{useI18n:()=>({t:k=>k,locale:vue.ref('zh-CN')})},
+    'naive-ui':{useMessage:()=>({error:()=>{},success:()=>{}}),useDialog:()=>({warning:()=>{}})},
+  },['sort','files','preview','revealFile']);
+  assert.equal(filesView.sort.value,'time');
+  assert.deepEqual([...filesView.files.value.map(f=>f.name)],['new.mp4','old.mp4']);
+  filesView.sort.value='timeAsc';
+  assert.deepEqual([...filesView.files.value.map(f=>f.name)],['old.mp4','new.mp4']);
+  await filesView.revealFile(store.files[1]);
+  assert.equal(filesView.preview.value,null);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{cmd:'reveal_file',args:{name:'new.mp4'}}]);
+});

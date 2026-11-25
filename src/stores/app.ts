@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { invoke, on, onReconnect, onConnection } from "../lib/backend";
 import type { ConnectionState } from "../lib/backend";
 import { setLocale } from "../i18n";
-import type { ActiveTask, AppSettings, DownloadedFile, QueueSnapshot, Status, TaskResult, WatchEntry, LibraryData } from "../types";
+import type { ActiveTask, AppSettings, DownloadedFile, PausedTask, PendingTask, QueueSnapshot, Status, TaskResult, WatchEntry, LibraryData } from "../types";
 
 type Runtime = {
   init: Promise<void> | null; queue: Promise<void> | null; files: Promise<void> | null;
@@ -28,7 +28,7 @@ export const useAppStore = defineStore("app", {
     channelRequest: null as { link: string; sequence: number } | null,
     library: { folders: [], items: [] } as LibraryData,
     status: null as Status | null, settings: null as AppSettings | null,
-    pending: [] as { id: number; url: string }[], activeTasks: [] as ActiveTask[],
+    pending: [] as PendingTask[], paused: [] as PausedTask[], activeTasks: [] as ActiveTask[],
     results: [] as TaskResult[], files: [] as DownloadedFile[], watched: [] as WatchEntry[],
     samplesByTask: {} as Record<number, { ts: number; current: number }[]>,
     speeds: {} as Record<number, number>,
@@ -92,7 +92,9 @@ export const useAppStore = defineStore("app", {
             return progress && progress.current > task.current ? progress : task;
           });
           const busy = new Set(this.activeTasks.map((task) => task.id));
-          this.pending = snapshot.pending.filter((task) => !busy.has(task.id) && !terminal.has(task.id));
+          this.paused = (snapshot.paused ?? []).filter((task) => !busy.has(task.id) && !terminal.has(task.id));
+          const pausedIds = new Set(this.paused.map((task) => task.id));
+          this.pending = snapshot.pending.filter((task) => !busy.has(task.id) && !terminal.has(task.id) && !pausedIds.has(task.id));
           this.results = [...new Map(snapshot.results.map((result) => [result.id, result])).values()];
           for (const id of Object.keys(this.samplesByTask).map(Number)) {
             if (!busy.has(id)) { delete this.samplesByTask[id]; delete this.speeds[id]; }
@@ -125,6 +127,7 @@ export const useAppStore = defineStore("app", {
       const elapsed = (now - samples[0].ts) / 1000;
       this.speeds[task.id] = elapsed >= 0.8 ? Math.max(0, (task.current - samples[0].current) / elapsed) : 0;
       this.pending = this.pending.filter((pending) => pending.id !== task.id);
+      this.paused = this.paused.filter((paused) => paused.id !== task.id);
       const index = this.activeTasks.findIndex((active) => active.id === task.id);
       if (index < 0) this.activeTasks.push(task); else this.activeTasks[index] = task;
     },
@@ -145,6 +148,7 @@ export const useAppStore = defineStore("app", {
           this.results = [...this.results.filter((old) => old.id !== result.id), result].slice(-200);
           this.activeTasks = this.activeTasks.filter((task) => task.id !== result.id);
           this.pending = this.pending.filter((task) => task.id !== result.id);
+          this.paused = this.paused.filter((task) => task.id !== result.id);
           delete this.samplesByTask[result.id]; delete this.speeds[result.id];
           void this.refreshFiles().catch(() => undefined);
         }));

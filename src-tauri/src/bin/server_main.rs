@@ -133,6 +133,14 @@ async fn invoke_dispatch(st: St, cmd: String, body: Value) -> Result<Value, Stri
             .await?;
             Value::Null
         }
+        "queue_pause" => {
+            tg_grab_lib::api::queue_pause(&st, i64_arg(&body, "id") as u64).await?;
+            Value::Null
+        }
+        "queue_resume" => {
+            tg_grab_lib::api::queue_resume(&st, i64_arg(&body, "id") as u64).await?;
+            Value::Null
+        }
         "queue_cancel" => {
             tg_grab_lib::api::queue_cancel(&st, i64_arg(&body, "id") as u64).await?;
             Value::Null

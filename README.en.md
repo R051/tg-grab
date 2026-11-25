@@ -54,10 +54,10 @@ Open `http://localhost:8080` and enter the access token printed in the logs. Con
 | Tag | Purpose |
 | --- | --- |
 | `preview` | Current preview channel; used by Compose by default |
-| `0.1.2` | Fixed current-preview version |
+| `0.1.3` | Fixed current-preview version |
 | `sha-<commit>` | Image built from a specific source commit |
 
-To pin a version, set `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.2` in a local `.env` file. To update the selected channel, run `docker compose pull` followed by `docker compose up -d --no-build`.
+To pin a version, set `TG_GRAB_IMAGE=ghcr.io/r051/tg-grab:0.1.3` in a local `.env` file. To update the selected channel, run `docker compose pull` followed by `docker compose up -d --no-build`.
 
 To build from source instead:
 

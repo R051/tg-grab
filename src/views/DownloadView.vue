@@ -2,8 +2,9 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { errorText } from "../lib/errors";
-import { invoke } from "../lib/backend";
-import { NButton, NInput, NProgress, useMessage } from "naive-ui";
+import { fileUrl, invoke, isDesktop } from "../lib/backend";
+import { formatTime } from "../lib/library";
+import { NButton, NInput, NProgress, NSelect, useMessage } from "naive-ui";
 import { useAppStore } from "../stores/app";
 import AppIcon from "../components/AppIcon.vue";
 
@@ -13,31 +14,44 @@ const message = useMessage();
 
 const input = ref("");
 const submitting = ref(false);
-const filter = ref<"all" | "active" | "done" | "failed">("all");
+const filter = ref<"all" | "active" | "paused" | "done" | "failed">("all");
+const sortOrder = ref<"timeDesc" | "timeAsc" | "queue">("timeDesc");
 
 const FILTERS = computed(
   () =>
     [
       { key: "all", label: t("download.filters.all") },
       { key: "active", label: t("download.filters.active") },
+      { key: "paused", label: t("download.filters.paused") },
       { key: "done", label: t("download.filters.done") },
       { key: "failed", label: t("download.filters.failed") },
     ] as const,
 );
+
+const SORT_OPTIONS = computed(() => [
+  { label: t("download.sortNewest"), value: "timeDesc" },
+  { label: t("download.sortOldest"), value: "timeAsc" },
+  { label: t("download.sortQueue"), value: "queue" },
+]);
+
 function errText(error: unknown): string {
   return errorText(error, t);
 }
 const busy = ref<Set<number>>(new Set());
 
 interface Row {
-  kind: "active" | "queued" | "success" | "cached" | "failed";
+  kind: "active" | "paused" | "queued" | "success" | "cached" | "failed";
   id: number;
   url: string;
   name?: string;
   path?: string;
   size?: number;
+  current?: number;
+  total?: number;
+  percent?: number;
   cached?: boolean;
   error?: string;
+  timestamp: number;
 }
 
 /** One row per task — status transitions in place. */
@@ -45,21 +59,48 @@ const taskRowsRaw = computed<Row[]>(() => {
   const rows: Row[] = [];
   const seen = new Set<number>();
 
-  for (const active of store.activeTasks) {
+  for (const active of store.activeTasks ?? []) {
     seen.add(active.id);
     rows.push({
       kind: "active",
       id: active.id,
       url: active.url,
       name: active.name,
+      current: active.current,
+      total: active.total,
+      percent: active.percent,
+      timestamp: active.startedAt ?? active.createdAt ?? 0,
     });
   }
-  for (const p of store.pending) {
+  for (const paused of store.paused ?? []) {
+    if (seen.has(paused.id)) continue;
+    seen.add(paused.id);
+    rows.push({
+      kind: "paused",
+      id: paused.id,
+      url: paused.url,
+      name: paused.name,
+      current: paused.current,
+      total: paused.total,
+      percent: paused.percent,
+      timestamp: paused.pausedAt ?? paused.createdAt ?? 0,
+    });
+  }
+  for (const p of store.pending ?? []) {
     if (seen.has(p.id)) continue;
     seen.add(p.id);
-    rows.push({ kind: "queued", id: p.id, url: p.url });
+    rows.push({
+      kind: "queued",
+      id: p.id,
+      url: p.url,
+      name: p.name,
+      current: p.current,
+      total: p.total,
+      percent: p.percent,
+      timestamp: p.createdAt ?? 0,
+    });
   }
-  for (const r of [...store.results].reverse()) {
+  for (const r of [...(store.results ?? [])].reverse()) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     rows.push({
@@ -70,6 +111,7 @@ const taskRowsRaw = computed<Row[]>(() => {
       path: r.path,
       size: r.size,
       error: r.error,
+      timestamp: r.completedAt ?? r.createdAt ?? 0,
     });
   }
   return rows;
@@ -77,17 +119,30 @@ const taskRowsRaw = computed<Row[]>(() => {
 
 const taskRows = computed<Row[]>(() => {
   const f = filter.value;
-  if (f === "all") return taskRowsRaw.value;
-  return taskRowsRaw.value.filter((r) => {
-    if (f === "active") return r.kind === "active" || r.kind === "queued";
-    if (f === "done") return r.kind === "success" || r.kind === "cached";
-    return r.kind === "failed";
-  });
+  const filtered =
+    f === "all"
+      ? taskRowsRaw.value
+      : taskRowsRaw.value.filter((r) => {
+          if (f === "active") return r.kind === "active" || r.kind === "queued";
+          if (f === "paused") return r.kind === "paused";
+          if (f === "done") return r.kind === "success" || r.kind === "cached";
+          return r.kind === "failed";
+        });
+
+  if (sortOrder.value === "queue") return filtered;
+  return [...filtered].sort((a, b) =>
+    sortOrder.value === "timeAsc"
+      ? a.timestamp - b.timestamp || a.id - b.id
+      : b.timestamp - a.timestamp || b.id - a.id,
+  );
 });
 
 const stats = computed(() => [
   { num: store.activeTasks.length, label: t("download.status.downloading") },
-  { num: store.pending.length, label: t("download.status.queued") },
+  {
+    num: store.pending.length + (store.paused?.length ?? 0),
+    label: t("download.status.queued"),
+  },
   {
     num: store.results.filter((r) => r.status === "success").length,
     label: t("download.status.success"),
@@ -96,7 +151,7 @@ const stats = computed(() => [
 ]);
 
 const queueIndices = computed(
-  () => new Map(store.pending.map((task, index) => [task.id, index])),
+  () => new Map((store.pending ?? []).map((task, index) => [task.id, index])),
 );
 
 function fmtSize(bytes: number | undefined | null): string {
@@ -114,6 +169,12 @@ function statusMeta(row: Row): { pill: string; label: string; icon: string } {
         pill: "downloading",
         label: t("download.status.downloading"),
         icon: "download",
+      };
+    case "paused":
+      return {
+        pill: "paused",
+        label: t("download.status.paused"),
+        icon: "pause",
       };
     case "queued":
       return {
@@ -155,7 +216,7 @@ function rowIndexQueue(id: number): number {
 async function openFile(name: string) {
   if (!isDesktop) {
     const url = fileUrl(name);
-    if (url) window.open(url, "_blank");
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
     return;
   }
   try {
@@ -171,6 +232,32 @@ async function retryTask(row: Row) {
   try {
     await invoke<number[]>("download_urls", { urls: [row.url] });
     message.success(t("download.queued", { n: 1 }));
+    await store.refreshQueue();
+  } catch (e) {
+    message.error(errText(e));
+  } finally {
+    busy.value.delete(row.id);
+  }
+}
+
+async function pauseTask(row: Row) {
+  if (busy.value.has(row.id)) return;
+  busy.value.add(row.id);
+  try {
+    await invoke("queue_pause", { id: row.id });
+    await store.refreshQueue();
+  } catch (e) {
+    message.error(errText(e));
+  } finally {
+    busy.value.delete(row.id);
+  }
+}
+
+async function resumeTask(row: Row) {
+  if (busy.value.has(row.id)) return;
+  busy.value.add(row.id);
+  try {
+    await invoke("queue_resume", { id: row.id });
     await store.refreshQueue();
   } catch (e) {
     message.error(errText(e));
@@ -229,8 +316,6 @@ async function startDownload() {
     submitting.value = false;
   }
 }
-
-import { fileUrl, isDesktop } from "../lib/backend";
 </script>
 
 <template>
@@ -291,19 +376,27 @@ import { fileUrl, isDesktop } from "../lib/backend";
 
   <!-- Unified task list -->
   <div class="panel fill-panel">
-    <div class="panel-title">
-      {{ t("download.queueTitle") }}
+    <div class="panel-title queue-header">
+      <span>{{ t("download.queueTitle") }}</span>
       <span class="count">{{ taskRows.length }}</span>
-      <div class="filters">
-        <button
-          v-for="f in FILTERS"
-          :key="f.key"
-          class="chip-filter"
-          :class="{ on: filter === f.key }"
-          @click="filter = f.key"
-        >
-          {{ f.label }}
-        </button>
+      <div class="queue-controls">
+        <div class="filters">
+          <button
+            v-for="f in FILTERS"
+            :key="f.key"
+            class="chip-filter"
+            :class="{ on: filter === f.key }"
+            @click="filter = f.key"
+          >
+            {{ f.label }}
+          </button>
+        </div>
+        <n-select
+          v-model:value="sortOrder"
+          :options="SORT_OPTIONS"
+          size="tiny"
+          class="queue-sort"
+        />
       </div>
     </div>
     <div v-if="!taskRows.length" class="empty">
@@ -331,10 +424,15 @@ import { fileUrl, isDesktop } from "../lib/backend";
                 ).toFixed(1)
               }}% · {{ fmtSize(store.speeds[row.id] ?? 0) }}/s</span
             >
+            <span v-else-if="row.kind === 'paused' && (row.total || row.percent)"
+              >{{ (row.percent ?? 0).toFixed(1) }}% ·
+              {{ fmtSize(row.current) }} / {{ fmtSize(row.total) }}</span
+            >
             <span class="pill" :class="statusMeta(row).pill">{{
               statusMeta(row).label
             }}</span>
             <span v-if="row.size">· {{ fmtSize(row.size) }}</span>
+            <span v-if="formatTime(row.timestamp)">· {{ formatTime(row.timestamp) }}</span>
             <span v-if="row.kind === 'failed' && row.error"
               >· {{ errText(row.error) }}</span
             >
@@ -354,54 +452,129 @@ import { fileUrl, isDesktop } from "../lib/backend";
             :show-indicator="false"
             style="margin-top: 6px"
           />
+          <n-progress
+            v-else-if="row.kind === 'paused' && row.total"
+            type="line"
+            status="warning"
+            :percentage="Number((row.percent ?? 0).toFixed(1))"
+            :height="4"
+            :show-indicator="false"
+            style="margin-top: 6px"
+          />
         </div>
-        <template v-if="row.kind === 'queued'">
+        <div class="row-actions">
+          <template v-if="row.kind === 'active'">
+            <button
+              class="ghost-btn row-action"
+              :disabled="busy.has(row.id)"
+              :title="t('download.pause')"
+              @click="pauseTask(row)"
+            >
+              <AppIcon name="pause" :size="13" />
+              <span>{{ t("download.pause") }}</span>
+            </button>
+            <button
+              class="ghost-btn row-action danger"
+              :disabled="busy.has(row.id)"
+              :title="t('download.cancel')"
+              @click="cancelTask(row)"
+            >
+              <AppIcon name="close" :size="13" />
+              <span>{{ t("common.cancel") }}</span>
+            </button>
+          </template>
+          <template v-else-if="row.kind === 'paused'">
+            <button
+              class="ghost-btn row-action"
+              :disabled="busy.has(row.id)"
+              :title="t('download.resume')"
+              @click="resumeTask(row)"
+            >
+              <AppIcon name="play" :size="13" />
+              <span>{{ t("download.resume") }}</span>
+            </button>
+            <button
+              class="ghost-btn row-action danger"
+              :disabled="busy.has(row.id)"
+              :title="t('download.cancel')"
+              @click="cancelTask(row)"
+            >
+              <AppIcon name="close" :size="13" />
+              <span>{{ t("common.cancel") }}</span>
+            </button>
+          </template>
+          <template v-else-if="row.kind === 'queued'">
+            <button
+              v-if="rowIndexQueue(row.id) > 0"
+              class="ghost-btn row-action icon-only"
+              :title="t('download.toTop')"
+              :disabled="busy.has(row.id)"
+              @click="moveTask(row, true)"
+            >
+              <AppIcon name="toTop" :size="13" />
+            </button>
+            <button
+              v-if="rowIndexQueue(row.id) > 1"
+              class="ghost-btn row-action icon-only"
+              :title="t('download.moveUp')"
+              :disabled="busy.has(row.id)"
+              @click="moveTask(row, false)"
+            >
+              <AppIcon name="arrowUp" :size="13" />
+            </button>
+            <button
+              class="ghost-btn row-action"
+              :disabled="busy.has(row.id)"
+              :title="t('download.pause')"
+              @click="pauseTask(row)"
+            >
+              <AppIcon name="pause" :size="13" />
+              <span>{{ t("download.pause") }}</span>
+            </button>
+            <button
+              class="ghost-btn row-action danger"
+              :disabled="busy.has(row.id)"
+              :title="t('download.cancel')"
+              @click="cancelTask(row)"
+            >
+              <AppIcon name="close" :size="13" />
+              <span>{{ t("common.cancel") }}</span>
+            </button>
+          </template>
           <button
-            v-if="rowIndexQueue(row.id) > 0"
+            v-else-if="
+              (row.kind === 'success' || row.kind === 'cached') &&
+              (row.path || row.name)
+            "
             class="ghost-btn row-action"
-            :title="t('download.toTop')"
-            :disabled="busy.has(row.id)"
-            @click="moveTask(row, true)"
+            :title="isDesktop ? t('library.reveal') : t('library.downloadDevice')"
+            @click="openFile(row.path || row.name!)"
           >
-            ⤒
+            <AppIcon :name="isDesktop ? 'folderOpen' : 'download'" :size="14" />
+            <span>{{
+              isDesktop ? t("download.openFolder") : t("library.downloadDevice")
+            }}</span>
           </button>
-          <button
-            v-if="rowIndexQueue(row.id) > 1"
-            class="ghost-btn row-action"
-            :title="t('download.moveUp')"
-            :disabled="busy.has(row.id)"
-            @click="moveTask(row, false)"
-          >
-            ↑
-          </button>
-          <button
-            class="ghost-btn row-action danger"
-            :disabled="busy.has(row.id)"
-            :title="t('download.cancel')"
-            @click="cancelTask(row)"
-          >
-            ✕
-          </button>
-        </template>
-        <button
-          v-if="
-            (row.kind === 'success' || row.kind === 'cached') &&
-            (row.path || row.name)
-          "
-          class="ghost-btn row-action"
-          @click="openFile(row.path || row.name!)"
-        >
-          ⤓
-        </button>
-        <button
-          v-else-if="row.kind === 'failed'"
-          class="ghost-btn row-action"
-          :disabled="busy.has(row.id)"
-          :title="t('download.retry')"
-          @click="retryTask(row)"
-        >
-          ⟳
-        </button>
+          <template v-else-if="row.kind === 'failed'">
+            <button
+              class="ghost-btn row-action"
+              :disabled="busy.has(row.id)"
+              :title="t('download.retry')"
+              @click="retryTask(row)"
+            >
+              <AppIcon name="refresh" :size="13" />
+              <span>{{ t("download.retry") }}</span>
+            </button>
+            <button
+              class="ghost-btn row-action danger icon-only"
+              :disabled="busy.has(row.id)"
+              :title="t('download.cancel')"
+              @click="cancelTask(row)"
+            >
+              <AppIcon name="close" :size="13" />
+            </button>
+          </template>
+        </div>
       </div>
     </div>
   </div>
@@ -435,9 +608,34 @@ import { fileUrl, isDesktop } from "../lib/backend";
 .row-item.k-active {
   background: var(--accent-soft);
 }
-
-.filters {
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.row-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.row-action.icon-only {
+  padding: 4px 8px;
+}
+.queue-header {
+  flex-wrap: wrap;
+}
+.queue-controls {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.queue-sort {
+  width: 122px;
+}
+.filters {
   display: flex;
   gap: 4px;
 }

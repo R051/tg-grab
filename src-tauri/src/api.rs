@@ -290,7 +290,21 @@ pub async fn download_urls(st: &SharedState, urls: Vec<String>) -> Result<Vec<u6
     Ok(ids)
 }
 
-/// Cancel a queued or in-flight download.
+/// Pause a queued or in-flight download, keeping partial chunks for resume.
+pub async fn queue_pause(st: &SharedState, id: u64) -> Result<(), String> {
+    crate::tg::queue::pause_job(st, id).await?;
+    st.bus.emit("queue:changed", serde_json::Value::Bool(true));
+    Ok(())
+}
+
+/// Resume a paused download.
+pub async fn queue_resume(st: &SharedState, id: u64) -> Result<(), String> {
+    crate::tg::queue::resume_job(st, id).await?;
+    st.bus.emit("queue:changed", serde_json::Value::Bool(true));
+    Ok(())
+}
+
+/// Cancel a queued, paused, in-flight, or failed download.
 pub async fn queue_cancel(st: &SharedState, id: u64) -> Result<(), String> {
     crate::tg::queue::cancel_job(st, id).await?;
     st.bus.emit("queue:changed", serde_json::Value::Bool(true));
@@ -352,6 +366,7 @@ pub struct DownloadedFile {
     pub size: u64,
     pub kind: String,
     pub source_url: Option<String>,
+    pub downloaded_at: i64,
 }
 
 pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String> {
@@ -417,15 +432,30 @@ pub async fn list_files(st: &SharedState) -> Result<Vec<DownloadedFile>, String>
                 }
                 .into()
             });
+            let downloaded_at = record
+                .and_then(|record| record.downloaded_at)
+                .unwrap_or_else(|| {
+                    meta.modified()
+                        .or_else(|_| meta.created())
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or(0)
+                });
             files.push(DownloadedFile {
                 name: rel,
                 size: meta.len(),
                 kind,
                 source_url: record.map(|record| record.source_url.clone()),
+                downloaded_at,
             });
         }
     }
-    files.sort_by(|a, b| b.name.cmp(&a.name));
+    files.sort_by(|a, b| {
+        b.downloaded_at
+            .cmp(&a.downloaded_at)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(files)
 }
 
@@ -713,6 +743,66 @@ pub async fn history_recent_remove(st: &SharedState, raw_id: i64) -> Result<(), 
     let mut cfg = st.config.write().await;
     cfg.recent.retain(|w| w.raw_id != raw_id);
     save(st, &cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_API_TEST: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn list_files_returns_downloaded_at_and_sorts_newest_first() {
+        let root = std::env::temp_dir().join(format!(
+            "tg-grab-files-sort-{}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+            NEXT_API_TEST.fetch_add(1, Ordering::Relaxed)
+        ));
+        let st = crate::init_core(root.clone()).await;
+        let dl_root = st.downloads_root().await;
+        std::fs::write(dl_root.join("alpha.mp4"), b"1234").unwrap();
+        std::fs::write(dl_root.join("zeta.mp4"), b"5678").unwrap();
+        crate::library::record_download(
+            &st,
+            crate::library::DownloadRecord {
+                source_id: "1_1".into(),
+                source_url: "https://t.me/demo/1".into(),
+                relative_path: "alpha.mp4".into(),
+                root: dl_root.clone(),
+                size: 4,
+                kind: "video".into(),
+                downloaded_at: Some(2_000_000_000_000),
+            },
+        )
+        .await
+        .unwrap();
+        crate::library::record_download(
+            &st,
+            crate::library::DownloadRecord {
+                source_id: "1_2".into(),
+                source_url: "https://t.me/demo/2".into(),
+                relative_path: "zeta.mp4".into(),
+                root: dl_root,
+                size: 4,
+                kind: "video".into(),
+                downloaded_at: Some(1_000_000_000_000),
+            },
+        )
+        .await
+        .unwrap();
+
+        let files = list_files(&st).await.unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].name, "alpha.mp4");
+        assert_eq!(files[0].downloaded_at, 2_000_000_000_000);
+        assert_eq!(files[1].name, "zeta.mp4");
+        assert_eq!(files[1].downloaded_at, 1_000_000_000_000);
+
+        drop(st);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// Desktop-only helper kept out of the web API surface.

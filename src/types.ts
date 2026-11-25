@@ -12,6 +12,27 @@ export type SignInOutcome =
   | { status: "ok"; user: string }
   | { status: "need_password"; hint: string | null };
 
+export interface PendingTask {
+  id: number;
+  url: string;
+  createdAt?: number;
+  name?: string;
+  current?: number;
+  total?: number;
+  percent?: number;
+}
+
+export interface PausedTask {
+  id: number;
+  url: string;
+  name?: string;
+  current: number;
+  total: number;
+  percent: number;
+  createdAt?: number;
+  pausedAt?: number;
+}
+
 export interface ActiveTask {
   id: number;
   url: string;
@@ -19,6 +40,8 @@ export interface ActiveTask {
   current: number;
   total: number;
   percent: number;
+  createdAt?: number;
+  startedAt?: number;
 }
 
 export interface TaskResult {
@@ -30,10 +53,13 @@ export interface TaskResult {
   size?: number;
   cached?: boolean;
   error?: string;
+  createdAt?: number;
+  completedAt?: number;
 }
 
 export interface QueueSnapshot {
-  pending: { id: number; url: string }[];
+  pending: PendingTask[];
+  paused?: PausedTask[];
   active: ActiveTask | null;
   activeTasks: ActiveTask[];
   results: TaskResult[];
@@ -96,6 +122,7 @@ export interface DownloadedFile {
   size: number;
   kind: MediaKind;
   sourceUrl?: string | null;
+  downloadedAt?: number;
 }
 
 export type MediaKind = "video" | "photo" | "audio" | "document";
