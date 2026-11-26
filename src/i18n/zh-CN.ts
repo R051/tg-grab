@@ -173,6 +173,10 @@ export default {
     loaded: "「{chat}」共读取 {n} 条内容",
     added: "已添加 {n} 个下载任务",
     browsing: "读取中…",
+    groupLabel: "同条消息 · {n} 项",
+    selectGroup: "全选本条消息",
+    selectDay: "全选当天",
+    shiftHint: "支持 Shift 连选",
   },
   common: {
     ...zhProduct.common,

@@ -173,6 +173,10 @@ export default {
     loaded: "\"{chat}\" — {n} items loaded",
     added: "Added {n} download task(s)",
     browsing: "Loading…",
+    groupLabel: "Grouped post · {n} items",
+    selectGroup: "Select post",
+    selectDay: "Select day",
+    shiftHint: "Shift-click for range",
   },
   common: {
     ...enProduct.common,

@@ -313,3 +313,45 @@ test('files view defaults to newest download time and reveals files directly', a
   assert.equal(filesView.preview.value,null);
   assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{cmd:'reveal_file',args:{name:'new.mp4'}}]);
 });
+
+test('history view groups multi-media posts for one-click selection and supports Shift range selection', async()=>{
+  const store=historyStore();
+  const items=[
+    {...video(103),groupedId:'90071992547409931',text:'',size:100},
+    {...video(102),groupedId:'90071992547409931',text:'Album caption',size:200},
+    {...video(101),groupedId:'90071992547409931',downloaded:true,localPath:'done.mp4',text:'',size:300},
+    {...video(100),text:'Standalone post',size:50},
+    {...video(99),text:'Older post',size:60},
+  ];
+  store.files=[{name:'done.mp4',sourceUrl:'https://t.me/A/101',size:300,kind:'video'}];
+  store.settings={effective_downloads_dir:'C:/downloads'};
+  const history=view('src/views/HistoryView.vue',async cmd=>cmd==='history_page'?page('A',items):[],store,[
+    'link','browse','grouped','toggleGroupSelect','toggleSelect','isSelected','selectedCount',
+  ]);
+  history.link.value='A';
+  await history.browse();
+
+  const entries=history.grouped.value[0].entries;
+  assert.equal(entries.length,3);
+  assert.equal(entries[0].kind,'group');
+  assert.equal(entries[0].caption,'Album caption');
+  assert.deepEqual([...entries[0].videos.map(v=>v.msgId)],[101,102,103]);
+  assert.equal(entries[1].kind,'single');
+  assert.equal(entries[2].kind,'single');
+
+  history.toggleGroupSelect(entries[0].videos);
+  assert.equal(history.isSelected(entries[0].videos[0]),false);
+  assert.equal(history.isSelected(entries[0].videos[1]),true);
+  assert.equal(history.isSelected(entries[0].videos[2]),true);
+  assert.equal(history.selectedCount.value,2);
+
+  history.toggleGroupSelect(entries[0].videos);
+  assert.equal(history.selectedCount.value,0);
+
+  history.toggleSelect(entries[0].videos[1]);
+  history.toggleSelect(entries[2].video,{shiftKey:true});
+  assert.equal(history.isSelected(entries[0].videos[1]),true);
+  assert.equal(history.isSelected(entries[0].videos[2]),true);
+  assert.equal(history.isSelected(entries[1].video),true);
+  assert.equal(history.isSelected(entries[2].video),true);
+});

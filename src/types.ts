@@ -106,6 +106,7 @@ export interface VideoInfo {
   localPath?: string | null;
   hasThumb: boolean;
   url: string;
+  groupedId?: string | null;
 }
 export interface ChannelDirectory { channels:{rawId:number;title:string;username:string|null;url:string;folderIds:number[]}[];folders:{id:number;name:string}[];foldersError:string|null;truncated:boolean }
 

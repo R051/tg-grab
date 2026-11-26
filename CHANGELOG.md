@@ -1,5 +1,12 @@
 # 更新记录 / Changelog
 
+## [0.1.4] - 2026-11-27
+
+- 频道浏览自动识别同一条 Telegram 消息发出的多条媒体（`grouped_id`），聚合展示并支持一键「全选本条消息」，同时保留分页边界完整性。
+- 频道浏览日期栏新增「全选当天」，多选框支持按住 Shift 连续区间选择，免去鼠标拖拽框选与滚动的冲突。
+
+Channel browsing now bundles multi-media Telegram posts (`grouped_id`) into grouped cards with a one-click "Select post" toggle, adds per-day selection, and supports Shift-click contiguous range selection.
+
 ## [0.1.3] - 2026-11-26
 
 - 下载任务新增「暂停 / 继续」与「取消」：暂停保留已下分片并支持断点续传，取消直接移出列表并清理 `.part` 临时文件。

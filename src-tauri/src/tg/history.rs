@@ -31,6 +31,8 @@ pub struct VideoInfo {
     /// Canonical t.me link (queue display + download pipeline input).
     pub url: String,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grouped_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,6 +241,7 @@ pub async fn browse(
         .iter_messages(rc.peer)
         .offset_id(offset_id)
         .max_date(day_end.map(|e| e as i32).unwrap_or(0));
+    let mut tail_group: Option<String> = None;
     loop {
         let Some(msg) = messages.next().await.map_err(|e| e.to_string())? else {
             finished = true;
@@ -255,6 +258,15 @@ pub async fn browse(
                 break;
             }
         }
+        let msg_group = msg.grouped_id().map(|id| id.to_string());
+        if let Some(ref target_group) = tail_group {
+            if msg_group.as_deref() != Some(target_group.as_str()) {
+                // Keep the first message outside the trailing album for the next page.
+                last_id = msg.id().saturating_add(1);
+                finished = false;
+                break;
+            }
+        }
         last_id = msg.id();
         if let Some(info) = video_entry(
             st,
@@ -267,11 +279,19 @@ pub async fn browse(
         ) {
             videos.push(info);
             if videos.len() >= PAGE_VIDEOS {
-                // Page full — more content may exist below (unless the
-                // requested day was scanned to its start, handled above).
-                finished = false;
-                break;
+                match msg_group {
+                    Some(gid) if videos.len() < PAGE_VIDEOS + 10 => {
+                        tail_group = Some(gid);
+                    }
+                    _ => {
+                        finished = false;
+                        break;
+                    }
+                }
             }
+        } else if tail_group.is_some() {
+            finished = false;
+            break;
         }
         if scanned >= MAX_SCAN {
             finished = false;
@@ -339,6 +359,7 @@ fn video_entry(
         has_thumb,
         url: make_msg_link(username, raw_id, msg_id),
         text: msg.text().chars().take(320).collect(),
+        grouped_id: msg.grouped_id().map(|id| id.to_string()),
     })
 }
 
@@ -411,4 +432,36 @@ fn thumb_path(st: &crate::state::Inner, raw_id: i64, msg_id: i32) -> std::path::
     st.default_downloads_dir
         .join("thumbs")
         .join(format!("{raw_id}_{msg_id}.jpg"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VideoInfo;
+
+    #[test]
+    fn grouped_id_serializes_as_string_preserving_64_bit_precision() {
+        let with_group = VideoInfo {
+            msg_id: 10,
+            kind: "video".into(),
+            name: "clip.mp4".into(),
+            size: 123,
+            duration: 5,
+            date: None,
+            downloaded: false,
+            local_path: None,
+            has_thumb: false,
+            url: "https://t.me/demo/10".into(),
+            text: String::new(),
+            grouped_id: Some("1389472910482719384".into()),
+        };
+        let json = serde_json::to_value(&with_group).unwrap();
+        assert_eq!(json["groupedId"], "1389472910482719384");
+
+        let without_group = VideoInfo {
+            grouped_id: None,
+            ..with_group
+        };
+        let json_plain = serde_json::to_value(&without_group).unwrap();
+        assert!(json_plain.get("groupedId").is_none());
+    }
 }

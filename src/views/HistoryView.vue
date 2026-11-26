@@ -17,6 +17,8 @@ import FavoriteDialog from "../components/FavoriteDialog.vue";
 import MediaPreview from "../components/MediaPreview.vue";
 import {
   findFavorite,
+  formatSize,
+  formatTime,
   mediaIcon,
   localPathFor,
 } from "../lib/library";
@@ -75,8 +77,33 @@ onUnmounted(() => {
 });
 
 
+type DayEntry =
+  | {
+      kind: "group";
+      key: string;
+      groupId: string;
+      caption: string;
+      time: string;
+      totalSize: number;
+      videos: VideoInfo[];
+    }
+  | {
+      kind: "single";
+      key: string;
+      video: VideoInfo;
+    };
+
+function postTimeLabel(dateStr?: string | null): string {
+  if (!dateStr) return "";
+  const ms = Date.parse(dateStr);
+  if (Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}` || formatTime(ms);
+}
+
 const grouped = computed(() => {
-  const groups = new Map<string, { key: string; videos: VideoInfo[] }>();
+  const days = new Map<string, { key: string; raw: VideoInfo[] }>();
   for (const video of visibleVideos.value) {
     const date = video.date ? new Date(video.date) : null;
     const key =
@@ -87,11 +114,61 @@ const grouped = computed(() => {
             day: "2-digit",
           })
         : "—";
-    if (!groups.has(key)) groups.set(key, { key, videos: [] });
-    groups.get(key)!.videos.push(video);
+    if (!days.has(key)) days.set(key, { key, raw: [] });
+    days.get(key)!.raw.push(video);
   }
-  return [...groups.values()];
+  return [...days.values()].map((day) => {
+    const byGroup = new Map<string, VideoInfo[]>();
+    for (const v of day.raw) {
+      if (v.groupedId) {
+        const list = byGroup.get(v.groupedId);
+        if (list) list.push(v);
+        else byGroup.set(v.groupedId, [v]);
+      }
+    }
+    const emittedGroups = new Set<string>();
+    const entries: DayEntry[] = [];
+    const orderedVideos: VideoInfo[] = [];
+    for (const v of day.raw) {
+      const gid = v.groupedId;
+      if (gid && (byGroup.get(gid)?.length ?? 0) >= 2) {
+        if (emittedGroups.has(gid)) continue;
+        emittedGroups.add(gid);
+        const members = [...byGroup.get(gid)!].sort((a, b) => a.msgId - b.msgId);
+        const caption =
+          members.map((item) => item.text?.trim() ?? "").find(Boolean) ?? "";
+        const totalSize = members.reduce((sum, item) => sum + (item.size ?? 0), 0);
+        const time = postTimeLabel(members[0]?.date);
+        entries.push({
+          kind: "group",
+          key: `g:${gid}`,
+          groupId: gid,
+          caption,
+          time,
+          totalSize,
+          videos: members,
+        });
+        orderedVideos.push(...members);
+      } else {
+        entries.push({
+          kind: "single",
+          key: `s:${v.msgId}`,
+          video: v,
+        });
+        orderedVideos.push(v);
+      }
+    }
+    return {
+      key: day.key,
+      videos: orderedVideos,
+      entries,
+    };
+  });
 });
+
+const flatDisplayVideos = computed(() =>
+  grouped.value.flatMap((day) => day.videos),
+);
 const taskStates = computed(() => {
   const states = new Map<string, "queued" | "paused" | "downloading" | "success">();
   for (const result of store.results) {
@@ -181,6 +258,7 @@ async function browse() {
   queryDate.value = query.date;
   videos.value = [];
   selected.value = new Set();
+  lastClickedUrl.value = null;
   chatTitle.value = "";
   browsing.value = true;
   try {
@@ -277,15 +355,60 @@ async function loadThumbs() {
 function thumbKey(video: VideoInfo) {
   return `${chatRawId.value}_${video.msgId}`;
 }
+const lastClickedUrl = ref<string | null>(null);
 function isSelected(video: VideoInfo) {
   return selectable(video) && selected.value.has(video.url);
 }
-function toggleSelect(video: VideoInfo) {
-  if (!selectable(video)) return;
+function selectableIn(items: VideoInfo[]) {
+  return items.filter(selectable);
+}
+function isGroupAllSelected(items: VideoInfo[]) {
+  const list = selectableIn(items);
+  return list.length > 0 && list.every(isSelected);
+}
+function isGroupPartiallySelected(items: VideoInfo[]) {
+  const list = selectableIn(items);
+  const count = list.filter(isSelected).length;
+  return count > 0 && count < list.length;
+}
+function toggleGroupSelect(items: VideoInfo[]) {
+  const list = selectableIn(items);
+  if (!list.length) return;
+  const selectAll = !list.every(isSelected);
   const next = new Set(selected.value);
-  if (next.has(video.url)) next.delete(video.url);
-  else next.add(video.url);
+  for (const video of list) {
+    if (selectAll) next.add(video.url);
+    else next.delete(video.url);
+  }
   selected.value = next;
+  lastClickedUrl.value = list[list.length - 1]?.url ?? null;
+}
+function toggleSelect(video: VideoInfo, event?: Event) {
+  if (!selectable(video)) return;
+  const shift = Boolean((event as MouseEvent | undefined)?.shiftKey);
+  const targetChecked = !isSelected(video);
+  const next = new Set(selected.value);
+  if (shift && lastClickedUrl.value) {
+    const list = flatDisplayVideos.value;
+    const from = list.findIndex((item) => item.url === lastClickedUrl.value);
+    const to = list.findIndex((item) => item.url === video.url);
+    if (from >= 0 && to >= 0) {
+      const start = Math.min(from, to);
+      const end = Math.max(from, to);
+      for (const item of list.slice(start, end + 1)) {
+        if (!selectable(item)) continue;
+        if (targetChecked) next.add(item.url);
+        else next.delete(item.url);
+      }
+      selected.value = next;
+      lastClickedUrl.value = video.url;
+      return;
+    }
+  }
+  if (targetChecked) next.add(video.url);
+  else next.delete(video.url);
+  selected.value = next;
+  lastClickedUrl.value = video.url;
 }
 const selectableCount = computed(
   () => visibleVideos.value.filter(selectable).length,
@@ -363,6 +486,7 @@ async function closeBrowse() {
   currentQuery = null;
   videos.value = [];
   selected.value = new Set();
+  lastClickedUrl.value = null;
   thumbs.value = {};
   chatTitle.value = "";
   chatRawId.value = 0;
@@ -460,58 +584,183 @@ watch(
       </div>
       <div class="grid">
         <template v-for="g in grouped" :key="g.key"
-          ><div class="day-divider">{{ g.key }}</div>
-          <article
-            v-for="v in g.videos"
-            :key="v.msgId"
-            class="vcard"
-            :class="{
-              downloaded: videoState(v) === 'success',
-              selected: isSelected(v),
-            }"
-          >
-            <button
-              class="vcard-preview"
-              :aria-label="t('history.preview', { name: v.name })"
-              @click="preview = details(v)"
+          ><div class="day-divider">
+            <span>{{ g.key }}</span>
+            <label
+              v-if="selectableIn(g.videos).length > 1"
+              class="day-select"
             >
-              <span class="thumb-wrap"
-                ><img
-                  v-if="thumbs[thumbKey(v)]"
-                  class="thumb"
-                  :src="thumbs[thumbKey(v)]"
-                  alt=""
-                  loading="lazy"
-                /><span v-else class="thumb thumb-empty"
-                  ><AppIcon :name="mediaIcon(v.kind)" :size="24" /></span
-                ><span v-if="v.duration" class="duration">{{
-                  fmtDuration(v.duration)
-                }}</span></span
-              ><span class="vname" :title="v.name">{{ v.name }}</span
-              ><span v-if="v.text" class="caption" :title="v.text">{{
-                v.text
-              }}</span>
-            </button>
-            <input
-              type="checkbox"
-              class="check"
-              :aria-label="t('history.selectItem', { name: v.name })"
-              :checked="isSelected(v)"
-              :disabled="!selectable(v)"
-              @change="toggleSelect(v)"
-            />
-            <button
-              class="card-save"
-              :class="{ saved: findFavorite(store.library.items, details(v)) }"
-              :title="t('library.save')"
-              @click="favorite = details(v)"
+              <input
+                type="checkbox"
+                :checked="isGroupAllSelected(g.videos)"
+                :indeterminate.prop="isGroupPartiallySelected(g.videos)"
+                @change="toggleGroupSelect(g.videos)"
+              />
+              <span>{{ t("history.selectDay") }}</span>
+            </label>
+          </div>
+          <template v-for="entry in g.entries" :key="entry.key">
+            <section
+              v-if="entry.kind === 'group'"
+              class="media-group"
+              :class="{ 'is-selected': isGroupAllSelected(entry.videos) }"
             >
-              <AppIcon name="star" :size="14" />
-            </button>
-            <span v-if="videoState(v)" class="pill" :class="videoState(v)">{{
-              t(`download.status.${videoState(v)}`)
-            }}</span>
-          </article>
+              <header class="media-group-header">
+                <div class="media-group-top">
+                  <label class="group-check">
+                    <input
+                      type="checkbox"
+                      :checked="isGroupAllSelected(entry.videos)"
+                      :indeterminate.prop="isGroupPartiallySelected(entry.videos)"
+                      :disabled="!selectableIn(entry.videos).length"
+                      @change="toggleGroupSelect(entry.videos)"
+                    />
+                    <span>{{ t("history.selectGroup") }}</span>
+                  </label>
+                  <span class="media-group-meta">
+                    {{ t("history.groupLabel", { n: entry.videos.length }) }}
+                    <template v-if="entry.totalSize">
+                      · {{ formatSize(entry.totalSize) }}
+                    </template>
+                    <template v-if="entry.time"> · {{ entry.time }}</template>
+                  </span>
+                </div>
+                <p
+                  v-if="entry.caption"
+                  class="media-group-caption"
+                  :title="entry.caption"
+                >
+                  {{ entry.caption }}
+                </p>
+              </header>
+              <div class="media-group-grid">
+                <article
+                  v-for="v in entry.videos"
+                  :key="v.msgId"
+                  class="vcard"
+                  :class="{
+                    downloaded: videoState(v) === 'success',
+                    selected: isSelected(v),
+                  }"
+                >
+                  <button
+                    class="vcard-preview"
+                    :aria-label="t('history.preview', { name: v.name })"
+                    @click="preview = details(v)"
+                  >
+                    <span class="thumb-wrap"
+                      ><img
+                        v-if="thumbs[thumbKey(v)]"
+                        class="thumb"
+                        :src="thumbs[thumbKey(v)]"
+                        alt=""
+                        loading="lazy"
+                      /><span v-else class="thumb thumb-empty"
+                        ><AppIcon :name="mediaIcon(v.kind)" :size="24" /></span
+                      ><span v-if="v.duration" class="duration">{{
+                        fmtDuration(v.duration)
+                      }}</span></span
+                    ><span class="vname" :title="v.name">{{ v.name }}</span
+                    ><span
+                      v-if="v.text && v.text.trim() !== entry.caption"
+                      class="caption"
+                      :title="v.text"
+                      >{{ v.text }}</span
+                    >
+                  </button>
+                  <input
+                    type="checkbox"
+                    class="check"
+                    :aria-label="t('history.selectItem', { name: v.name })"
+                    :checked="isSelected(v)"
+                    :disabled="!selectable(v)"
+                    @click.prevent="toggleSelect(v, $event)"
+                  />
+                  <button
+                    class="card-save"
+                    :class="{
+                      saved: findFavorite(store.library.items, details(v)),
+                    }"
+                    :title="t('library.save')"
+                    @click="favorite = details(v)"
+                  >
+                    <AppIcon name="star" :size="14" />
+                  </button>
+                  <span
+                    v-if="videoState(v)"
+                    class="pill"
+                    :class="videoState(v)"
+                    >{{ t(`download.status.${videoState(v)}`) }}</span
+                  >
+                </article>
+              </div>
+            </section>
+            <article
+              v-else
+              class="vcard"
+              :class="{
+                downloaded: videoState(entry.video) === 'success',
+                selected: isSelected(entry.video),
+              }"
+            >
+              <button
+                class="vcard-preview"
+                :aria-label="t('history.preview', { name: entry.video.name })"
+                @click="preview = details(entry.video)"
+              >
+                <span class="thumb-wrap"
+                  ><img
+                    v-if="thumbs[thumbKey(entry.video)]"
+                    class="thumb"
+                    :src="thumbs[thumbKey(entry.video)]"
+                    alt=""
+                    loading="lazy"
+                  /><span v-else class="thumb thumb-empty"
+                    ><AppIcon
+                      :name="mediaIcon(entry.video.kind)"
+                      :size="24" /></span
+                  ><span v-if="entry.video.duration" class="duration">{{
+                    fmtDuration(entry.video.duration)
+                  }}</span></span
+                ><span class="vname" :title="entry.video.name">{{
+                  entry.video.name
+                }}</span
+                ><span
+                  v-if="entry.video.text"
+                  class="caption"
+                  :title="entry.video.text"
+                  >{{ entry.video.text }}</span
+                >
+              </button>
+              <input
+                type="checkbox"
+                class="check"
+                :aria-label="t('history.selectItem', { name: entry.video.name })"
+                :checked="isSelected(entry.video)"
+                :disabled="!selectable(entry.video)"
+                @click.prevent="toggleSelect(entry.video, $event)"
+              />
+              <button
+                class="card-save"
+                :class="{
+                  saved: findFavorite(
+                    store.library.items,
+                    details(entry.video),
+                  ),
+                }"
+                :title="t('library.save')"
+                @click="favorite = details(entry.video)"
+              >
+                <AppIcon name="star" :size="14" />
+              </button>
+              <span
+                v-if="videoState(entry.video)"
+                class="pill"
+                :class="videoState(entry.video)"
+                >{{ t(`download.status.${videoState(entry.video)}`) }}</span
+              >
+            </article>
+          </template>
         </template>
       </div>
     </div>
@@ -523,6 +772,7 @@ watch(
           :disabled="!selectableCount"
           @change="toggleSelectAll"
         />{{ t("history.selectAll") }}</label
+      ><span class="muted shift-hint">{{ t("history.shiftHint") }}</span
       ><span class="collection-spacer" /><n-button
         v-if="!exhausted"
         :loading="browsing"
@@ -599,9 +849,89 @@ watch(
 }
 .day-divider {
   grid-column: 1/-1;
-  padding: 8px 0;
+  padding: 8px 0 4px;
   color: var(--text-dim);
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.day-select,
+.group-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.day-select input,
+.group-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.day-select {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+.day-select:hover {
+  color: var(--text);
+}
+.media-group {
+  grid-column: 1/-1;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-inset) 65%, var(--surface));
+  padding: 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.media-group.is-selected {
+  border-color: var(--accent-border);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg-inset));
+}
+.media-group-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+.media-group-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.group-check {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.group-check input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.media-group-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.media-group-caption {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.media-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
 }
 .vcard {
   position: relative;
@@ -699,6 +1029,9 @@ watch(
   }
   .results-footer {
     flex-wrap: wrap;
+  }
+  .shift-hint {
+    display: none;
   }
 }
 </style>
